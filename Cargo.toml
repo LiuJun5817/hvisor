@@ -21,8 +21,8 @@ cfg-if = "1.0"
 bitvec = { version="1.0.1", default-features = false, features = ["atomic", "alloc"] }
 heapless = { version = "0.8.0 "}
 percpu = { package = "percpu", version="0.2", features=["arm-el2"]}
-vstd = { version = "0.0.0-2025-08-12-1837", default-features = false, features = ["alloc"] }
-verified-hv-mem = { git = "https://github.com/LiuJun5817/verified-hv-mem", rev = "f0543a8" }
+vstd = { version = "0.0.0-2026-06-14-0213", default-features = false, features = ["alloc"] }
+verified-hv-mem = { git = "https://github.com/LiuJun5817/verified-hv-mem", rev = "e8c95b7" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "9.4.0"
