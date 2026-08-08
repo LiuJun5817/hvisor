@@ -22,19 +22,11 @@ use crate::consts::PAGE_SIZE;
 use crate::error::HvResult;
 use crate::memory::addr::virt_to_phys;
 
-use spin::Once;
 use vstd::prelude::Tracked;
-
-use verified_hv_mem::{address::addr::PAddr, global_allocator::GbAlloc};
-
-static GB_ALLOCATOR: Once<GbAlloc> = Once::new();
-
-pub fn init_global_allocator(base: PhysAddr) -> &'static GbAlloc {
-    GB_ALLOCATOR.call_once(|| GbAlloc::default(PAddr(base)))
-}
+use verified_hv_mem::global_allocator::GbAlloc;
 
 pub fn gb_allocator() -> &'static GbAlloc {
-    GB_ALLOCATOR.get().expect("GB_ALLOCATOR is not initialized")
+    crate::memory::verihymem::global_allocator()
 }
 
 /// A safe wrapper for physical frame allocation.
@@ -157,15 +149,23 @@ impl Frame {
     }
 }
 
-/// Initialize the physical frame allocator.
+/// Initialize hvisor's global verified memory manager and physical frame allocator.
 pub fn init() {
     let mem_pool_start = crate::consts::mem_pool_start();
     let mem_pool_end = align_down(crate::consts::hv_end());
     let mem_pool_size = mem_pool_end - mem_pool_start;
 
-    init_global_allocator(align_up(virt_to_phys(mem_pool_start)));
     let page_count = align_up(mem_pool_size) / PAGE_SIZE;
-    gb_allocator().init(page_count, Tracked::assume_new());
+    let pt_level = if crate::arch::aarch64::mm::is_s2_pt_level3() {
+        3
+    } else {
+        4
+    };
+    crate::memory::verihymem::init_hv_mem(
+        align_up(virt_to_phys(mem_pool_start)),
+        page_count,
+        pt_level,
+    );
 
     info!(
         "Frame allocator initialization finished: {:#x?}",

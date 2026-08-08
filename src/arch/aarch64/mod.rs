@@ -17,6 +17,7 @@ mod cache;
 pub mod consts;
 pub mod cpu;
 pub mod entry;
+pub mod hardware;
 pub mod hypercall;
 pub mod ipi;
 pub mod ivc;

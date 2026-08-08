@@ -98,6 +98,9 @@ const CMDQ_ENT_DWORDS: usize = 2;
 const CMDQ_ENT_SIZE: usize = CMDQ_ENT_DWORDS << 3;
 
 const CMDQ_OP_CMD_SYNC: usize = 0x46;
+const CMDQ_OP_TLBI_S2_IPA: usize = 0x2a;
+const CMDQ_TLBI_0_VMID_OFF: usize = 32;
+const CMDQ_TLBI_1_LEAF: usize = 1;
 // const CMDQ_SYNC_0_CS_SEV:usize = 2;
 // const CMDQ_SYNC_0_CS_OFF:usize = 12;
 const CMDQ_SYNC_0_MSH_OFF: usize = 22;
@@ -341,6 +344,17 @@ impl CmdQueue {
         cmd.0[1] |= CMDQ_CFGI_1_LEAF as u64;
         cmd
     }
+
+    // CMD_TLBI_S2_IPA.  `ipa_page` is the 4 KiB IPA page number used by
+    // VeriHyMem's hardware interface.
+    fn build_tlbi_s2_ipa_cmd(&self, vmid: usize, ipa_page: usize) -> Cmd {
+        let mut cmd = Cmd::new();
+        cmd.0[0] |= CMDQ_OP_TLBI_S2_IPA as u64;
+        cmd.0[0] |= (vmid << CMDQ_TLBI_0_VMID_OFF) as u64;
+        cmd.0[1] |= (ipa_page << 12) as u64;
+        cmd.0[1] |= CMDQ_TLBI_1_LEAF as u64;
+        cmd
+    }
 }
 
 struct Smmuv3 {
@@ -522,6 +536,11 @@ impl Smmuv3 {
         let cmd = self.cmdq.build_sync_cmd();
         self.cmd_insert(cmd);
     }
+
+    fn tlbi_s2(&mut self, vmid: usize, ipa_page: usize) {
+        let cmd = self.cmdq.build_tlbi_s2_ipa_cmd(vmid, ipa_page);
+        self.cmd_insert(cmd);
+    }
 }
 
 static SMMUV3: spin::Once<Mutex<Smmuv3>> = spin::Once::new();
@@ -555,4 +574,19 @@ fn smmuv3_size() -> usize {
 pub fn iommu_add_device(vmid: usize, sid: usize, root_pt: usize) {
     let mut smmu = SMMUV3.get().unwrap().lock();
     smmu.write_ste(sid as _, vmid as _, root_pt as _);
+}
+
+/// Submit an SMMUv3 stage-2 IPA invalidation.  Completion is explicit via
+/// [`stage2_tlbi_sync`], matching VeriHyMem's split command/sync interface.
+pub fn stage2_tlbi_s2(vmid: usize, ipa_page: usize) {
+    if let Some(smmu) = SMMUV3.get() {
+        smmu.lock().tlbi_s2(vmid, ipa_page);
+    }
+}
+
+/// Wait for all previously submitted SMMUv3 commands.
+pub fn stage2_tlbi_sync() {
+    if let Some(smmu) = SMMUV3.get() {
+        smmu.lock().sync_issue();
+    }
 }

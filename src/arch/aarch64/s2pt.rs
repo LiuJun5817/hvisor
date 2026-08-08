@@ -14,9 +14,9 @@
 // Authors:
 //
 #![allow(unused)]
-use aarch64_cpu::registers::VTTBR_EL2;
-use crate::memory::addr::{GuestPhysAddr, HostPhysAddr, PhysAddr};
 use super::paging::{GenericPTE, HvPageTable, PagingInstr};
+use crate::memory::addr::{GuestPhysAddr, HostPhysAddr, PhysAddr};
+use aarch64_cpu::registers::VTTBR_EL2;
 
 pub struct S2PTInstr;
 
@@ -35,6 +35,10 @@ impl PagingInstr for S2PTInstr {
 }
 
 pub type Stage2PageTable = HvPageTable<GuestPhysAddr, S2PTInstr>;
+
+pub unsafe fn activate_stage2_page_table(root_paddr: HostPhysAddr) {
+    S2PTInstr::activate(root_paddr);
+}
 
 pub fn stage2_mode_detect() {
     info!("Dynamical detection of stage-2 paging mode is not supported yet.");

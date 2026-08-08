@@ -35,6 +35,12 @@ use verified_hv_mem::{
     },
 };
 
+/// Architecture-selected VeriHyMem page-table entry type.
+///
+/// Generic integration code uses this alias instead of depending on the
+/// concrete AArch64 PTE implementation directly.
+pub type HvisorPTE = Aarch64PTE;
+
 #[derive(Debug)]
 pub enum PagingError {
     NoMemory,
@@ -153,7 +159,7 @@ pub trait GenericPageTable: GenericPageTableImmut {
 
 /// Page table implementation for aarch64.
 pub struct HvPageTable<VA: From<usize> + Into<usize> + Copy, I: PagingInstr> {
-    inner: ExPageTable<BitAlloc1M, Aarch64PTE>,
+    inner: ExPageTable<BitAlloc1M, HvisorPTE>,
     /// Make sure all accesses to the page table and its clonees is exclusive.
     clonee_lock: Arc<Mutex<()>>,
     _phantom: PhantomData<(VA, I)>,
@@ -215,7 +221,7 @@ where
         assert!(level == 3 || level == 4);
         let constants = hvisor_pt_constants(level);
         Self {
-            inner: ExPageTable::<BitAlloc1M, Aarch64PTE>::new(gb_allocator(), constants),
+            inner: ExPageTable::<BitAlloc1M, HvisorPTE>::new(gb_allocator(), constants),
             clonee_lock: Arc::new(Mutex::new(())),
             _phantom: PhantomData,
         }
@@ -327,7 +333,7 @@ where
     }
 }
 
-fn hvisor_pt_constants(level: usize) -> PTConstants {
+pub(crate) fn hvisor_pt_constants(level: usize) -> PTConstants {
     let mut levels = Vec::new();
     if level == 4 {
         levels.push(PTArchLevel {

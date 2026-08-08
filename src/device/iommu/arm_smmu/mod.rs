@@ -31,6 +31,14 @@ use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 use tock_registers::registers::{ReadOnly, ReadWrite};
 
+pub(crate) fn stage2_tlbi_s2(zone_id: usize, ipa_page: usize) {
+    smmu_hw::stage2_tlbi_s2(zone_id, ipa_page);
+}
+
+pub(crate) fn stage2_tlbi_sync() {
+    smmu_hw::stage2_tlbi_sync();
+}
+
 pub(super) struct ArmSmmu;
 
 unsafe impl Send for ArmSmmu {}

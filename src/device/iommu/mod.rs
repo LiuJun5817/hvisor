@@ -48,6 +48,27 @@ pub fn iommu_init() {
     iommu_impl().initialize();
 }
 
+/// Submit one SMMU stage-2 invalidation for the VeriHyMem backend.
+///
+/// The generic boundary intentionally remains available when no IOMMU is
+/// configured; in that configuration it is a no-op.
+#[cfg(arm_smmu)]
+pub(crate) fn stage2_tlbi_s2(zone_id: usize, ipa_page: usize) {
+    arm_smmu::stage2_tlbi_s2(zone_id, ipa_page);
+}
+
+#[cfg(not(arm_smmu))]
+pub(crate) fn stage2_tlbi_s2(_zone_id: usize, _ipa_page: usize) {}
+
+/// Complete previously submitted SMMU maintenance commands.
+#[cfg(arm_smmu)]
+pub(crate) fn stage2_tlbi_sync() {
+    arm_smmu::stage2_tlbi_sync();
+}
+
+#[cfg(not(arm_smmu))]
+pub(crate) fn stage2_tlbi_sync() {}
+
 /// Public interface for adding a device to the IOMMU
 /// It can be call during VM creation, the concret implementation need
 pub fn iommu_add_device_with_root_pt_addr(zone_id: usize, did: usize, root_pt_addr: usize) {

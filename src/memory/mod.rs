@@ -19,6 +19,7 @@ pub mod heap;
 pub mod mapper;
 pub mod mm;
 pub mod mmio;
+pub mod verihymem;
 
 use core::ops::{Deref, DerefMut};
 
