@@ -349,6 +349,8 @@ fn hvisor_pt_constants(level: usize) -> PTConstants {
     });
     PTConstants {
         arch: PTArch(levels),
+        hva_to_pa_offset: 0,
+        huge_pages: true,
     }
 }
 
@@ -366,9 +368,6 @@ fn attr_to_flags(attr: MemAttr) -> MemFlags {
     if attr.device {
         flags |= MemFlags::IO;
     }
-    if attr.user_accessible {
-        flags |= MemFlags::USER;
-    }
     flags
 }
 
@@ -378,7 +377,6 @@ fn flags_to_attr(flags: MemFlags) -> MemAttr {
         writable: flags.contains(MemFlags::WRITE),
         executable: flags.contains(MemFlags::EXECUTE),
         device: flags.contains(MemFlags::IO),
-        user_accessible: flags.contains(MemFlags::USER),
     }
 }
 

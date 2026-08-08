@@ -22,7 +22,7 @@ bitvec = { version="1.0.1", default-features = false, features = ["atomic", "all
 heapless = { version = "0.8.0 "}
 percpu = { package = "percpu", version="0.2", features=["arm-el2"]}
 vstd = { version = "0.0.0-2026-06-14-0213", default-features = false, features = ["alloc"] }
-verified-hv-mem = { git = "https://github.com/LiuJun5817/verified-hv-mem", rev = "48237d7" }
+verified-hv-mem = { path = "../verified-hv-mem" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "9.4.0"

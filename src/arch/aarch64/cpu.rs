@@ -229,7 +229,7 @@ impl ArchCpu {
                     addr_of!(PARKING_INST_PAGE) as *const _ as HostPhysAddr - PHYS_VIRT_OFFSET
                 },
                 PAGE_SIZE,
-                MemFlags::READ | MemFlags::WRITE | MemFlags::IO,
+                MemFlags::READ | MemFlags::WRITE | MemFlags::EXECUTE,
             ))
             .unwrap();
             gpm
