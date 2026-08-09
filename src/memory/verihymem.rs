@@ -57,16 +57,12 @@ pub fn make_memory_region(
     size: usize,
     flags: MemFlags,
 ) -> VeriHyMemMemoryRegion {
-    assert!(size != 0 && size % PAGE_SIZE == 0);
-    assert!(vstart % PAGE_SIZE == 0 && pstart % PAGE_SIZE == 0);
-    let region = VeriHyMemMemoryRegion {
+    VeriHyMemMemoryRegion {
         vstart: VAddr(vstart),
         pstart: PAddr(pstart),
         pages: size / PAGE_SIZE,
         attr: mem_flags_to_attr(flags),
-    };
-    assert!(region.valid());
-    region
+    }
 }
 
 /// Convert a legacy hvisor region into VeriHyMem's explicit linear region.
@@ -158,6 +154,9 @@ pub type HvisorHvMem = HvMem<
     HvisorHardware,
     ZonePayload,
 >;
+
+/// Standalone stage-2 page table used while a CPU is parked.
+pub static PARKING_PAGE_TABLE: Once<VeriHyMemPageTable> = Once::new();
 
 static HV_MEM: Once<Box<HvisorHvMem>> = Once::new();
 

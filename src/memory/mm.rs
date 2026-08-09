@@ -17,17 +17,18 @@
 
 //! Memory management.
 
-use alloc::collections::btree_map::{BTreeMap, Entry};
-use core::fmt::{Debug, Formatter, Result};
-use spin::Once;
-
 use super::AlignedPage;
 use super::{mapper::Mapper, MemFlags};
-use crate::arch::paging::{GenericPageTable, PageSize, PagingResult};
-use crate::arch::Stage2PageTable;
-use crate::error::HvResult;
-use crate::memory::addr::is_aligned;
-use crate::memory::PhysAddr;
+use core::fmt::{Debug, Formatter, Result};
+
+#[cfg(not(target_arch = "aarch64"))]
+use crate::arch::{
+    paging::{GenericPageTable, PageSize, PagingResult},
+    error::HvResult,
+    memory::memory::PhysAddr,
+};
+#[cfg(not(target_arch = "aarch64"))]
+use alloc::collections::btree_map::{BTreeMap, Entry};
 
 #[derive(Clone)]
 pub struct MemoryRegion<VA> {
@@ -35,14 +36,6 @@ pub struct MemoryRegion<VA> {
     pub size: usize,
     pub flags: MemFlags,
     pub mapper: Mapper,
-}
-
-pub struct MemorySet<PT: GenericPageTable>
-where
-    PT::VA: Ord,
-{
-    regions: BTreeMap<PT::VA, MemoryRegion<PT::VA>>,
-    pt: PT,
 }
 
 impl<VA: From<usize> + Into<usize> + Copy> MemoryRegion<VA> {
@@ -66,6 +59,28 @@ impl<VA: From<usize> + Into<usize> + Copy> MemoryRegion<VA> {
     }
 }
 
+impl<VA: Into<usize> + Copy> Debug for MemoryRegion<VA> {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        let start = self.start.into();
+        f.debug_struct("MemoryRegion")
+            .field("vaddr_range", &(start..start + self.size))
+            .field("size", &self.size)
+            .field("flags", &self.flags)
+            .field("mapper", &self.mapper)
+            .finish()
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub struct MemorySet<PT: GenericPageTable>
+where
+    PT::VA: Ord,
+{
+    regions: BTreeMap<PT::VA, MemoryRegion<PT::VA>>,
+    pt: PT,
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 impl<PT: GenericPageTable> MemorySet<PT>
 where
     PT::VA: Ord,
@@ -246,18 +261,7 @@ where
     }
 }
 
-impl<VA: Into<usize> + Copy> Debug for MemoryRegion<VA> {
-    fn fmt(&self, f: &mut Formatter) -> Result {
-        let start = self.start.into();
-        f.debug_struct("MemoryRegion")
-            .field("vaddr_range", &(start..start + self.size))
-            .field("size", &self.size)
-            .field("flags", &self.flags)
-            .field("mapper", &self.mapper)
-            .finish()
-    }
-}
-
+#[cfg(not(target_arch = "aarch64"))]
 impl<PT: GenericPageTable> Debug for MemorySet<PT>
 where
     PT::VA: Ord,
@@ -271,6 +275,7 @@ where
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 impl<PT: GenericPageTable> Drop for MemorySet<PT>
 where
     PT::VA: Ord,
@@ -280,7 +285,5 @@ where
         self.clear();
     }
 }
-
-pub static PARKING_MEMORY_SET: Once<MemorySet<Stage2PageTable>> = Once::new();
 
 pub static mut PARKING_INST_PAGE: AlignedPage = AlignedPage::new();

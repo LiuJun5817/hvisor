@@ -27,8 +27,11 @@ use bitflags::bitflags;
 
 pub use addr::{GuestPhysAddr, HostPhysAddr, PhysAddr, VirtAddr};
 pub use frame::Frame;
-pub use mm::{MemoryRegion, MemorySet, PARKING_INST_PAGE};
+pub use mm::{MemoryRegion, PARKING_INST_PAGE};
 pub use mmio::*;
+
+#[cfg(not(target_arch = "aarch64"))]
+pub use mm::MemorySet;
 
 #[cfg(target_arch = "aarch64")]
 pub use verihymem::VMemorySet;

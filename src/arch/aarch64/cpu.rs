@@ -14,12 +14,15 @@
 // Authors:
 //
 use crate::{
-    arch::{mm::new_s2_memory_set, sysreg::write_sysreg},
-    consts::{MAX_CPU_NUM, PAGE_SIZE, PER_CPU_ARRAY_PTR, PER_CPU_SIZE},
+    arch::{s2pt::activate_stage2_page_table, sysreg::write_sysreg},
+    consts::{MAX_CPU_NUM, PER_CPU_ARRAY_PTR, PER_CPU_SIZE},
     cpu_data::{this_cpu_data, VcpuState},
     memory::{
-        addr::PHYS_VIRT_OFFSET, mm::PARKING_MEMORY_SET, GuestPhysAddr, HostPhysAddr, MemFlags,
-        MemoryRegion, VirtAddr, PARKING_INST_PAGE,
+        addr::PHYS_VIRT_OFFSET,
+        verihymem::{
+            global_allocator, hv_mem, mem_flags_to_attr, VeriHyMemPageTable, PARKING_PAGE_TABLE,
+        },
+        HostPhysAddr, MemFlags, VirtAddr, PARKING_INST_PAGE,
     },
     platform::BOARD_MPIDR_MAPPINGS,
     zone::find_zone,
@@ -28,6 +31,13 @@ use aarch64_cpu::registers::{
     Readable, Writeable, ELR_EL2, HCR_EL2, MPIDR_EL1, SCTLR_EL1, SPSR_EL2, VTCR_EL2,
 };
 use core::ptr::addr_of;
+use verified_hv_mem::{
+    address::{
+        addr::{PAddr, VAddr},
+        frame::{Frame, FrameSize},
+    },
+    page_table::PageTable,
+};
 
 use super::{
     mm::{get_parange, get_parange_bits, is_s2_pt_level3},
@@ -216,27 +226,35 @@ impl ArchCpu {
         drop(_lock);
 
         // reset current cpu -> pc = 0x0 (wfi)
-        PARKING_MEMORY_SET.call_once(|| {
+        PARKING_PAGE_TABLE.call_once(|| {
             let parking_code: [u8; 8] = [0x7f, 0x20, 0x03, 0xd5, 0xff, 0xff, 0xff, 0x17]; // 1: wfi; b 1b
             unsafe {
                 PARKING_INST_PAGE[..8].copy_from_slice(&parking_code);
             }
 
-            let mut gpm = new_s2_memory_set();
-            gpm.insert(MemoryRegion::new_with_offset_mapper(
-                0 as GuestPhysAddr,
-                unsafe {
-                    addr_of!(PARKING_INST_PAGE) as *const _ as HostPhysAddr - PHYS_VIRT_OFFSET
-                },
-                PAGE_SIZE,
-                MemFlags::READ | MemFlags::WRITE | MemFlags::EXECUTE,
-            ))
-            .unwrap();
-            gpm
+            let parking_hpa = unsafe {
+                addr_of!(PARKING_INST_PAGE) as *const _ as HostPhysAddr - PHYS_VIRT_OFFSET
+            };
+            let allocator = global_allocator();
+            let mut page_table = VeriHyMemPageTable::new(allocator, hv_mem().pt_constants.clone());
+            page_table
+                .map(
+                    allocator,
+                    VAddr(0),
+                    Frame {
+                        base: PAddr(parking_hpa),
+                        size: FrameSize::Size4K,
+                        attr: mem_flags_to_attr(
+                            MemFlags::READ | MemFlags::WRITE | MemFlags::EXECUTE,
+                        ),
+                    },
+                )
+                .unwrap();
+            page_table
         });
         self.reset(0, this_cpu_data().dtb_ipa);
         unsafe {
-            PARKING_MEMORY_SET.get().unwrap().activate();
+            activate_stage2_page_table(PARKING_PAGE_TABLE.get().unwrap().root().0);
             info!("cpu {} start parking", self.cpuid);
             vmreturn(self.guest_reg() as *mut _ as usize);
         }

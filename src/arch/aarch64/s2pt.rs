@@ -13,31 +13,15 @@
 //
 // Authors:
 //
-#![allow(unused)]
-use super::paging::{GenericPTE, HvPageTable, PagingInstr};
-use crate::memory::addr::{GuestPhysAddr, HostPhysAddr, PhysAddr};
+use crate::memory::addr::HostPhysAddr;
 use aarch64_cpu::registers::VTTBR_EL2;
 
-pub struct S2PTInstr;
-
-impl PagingInstr for S2PTInstr {
-    unsafe fn activate(root_paddr: HostPhysAddr) {
-        debug!("activating stage 2 page table at {:#x}", root_paddr);
-        VTTBR_EL2.set_baddr(root_paddr as _);
-        core::arch::asm!("isb");
-        core::arch::asm!("tlbi vmalls12e1is");
-        core::arch::asm!("dsb nsh");
-    }
-
-    fn flush(_vaddr: Option<usize>) {
-        // do nothing
-    }
-}
-
-pub type Stage2PageTable = HvPageTable<GuestPhysAddr, S2PTInstr>;
-
 pub unsafe fn activate_stage2_page_table(root_paddr: HostPhysAddr) {
-    S2PTInstr::activate(root_paddr);
+    debug!("activating stage 2 page table at {:#x}", root_paddr);
+    VTTBR_EL2.set_baddr(root_paddr as _);
+    core::arch::asm!("isb");
+    core::arch::asm!("tlbi vmalls12e1is");
+    core::arch::asm!("dsb nsh");
 }
 
 pub fn stage2_mode_detect() {

@@ -17,7 +17,7 @@ use core::sync::atomic::AtomicU32;
 
 use spin::RwLock;
 
-use crate::{arch::Stage2PageTable, consts::MAX_CPU_NUM, memory::MemorySet, wait_for};
+use crate::{consts::MAX_CPU_NUM, wait_for};
 
 use super::sysreg::read_sysreg;
 
@@ -47,10 +47,6 @@ pub fn get_parange_bits() -> usize {
 
 pub fn is_s2_pt_level3() -> bool {
     get_parange_bits() < 44
-}
-
-pub fn new_s2_memory_set() -> MemorySet<Stage2PageTable> {
-    MemorySet::new(if is_s2_pt_level3() { 3 } else { 4 })
 }
 
 pub fn arch_post_heap_init(_host_dtb: usize) {
