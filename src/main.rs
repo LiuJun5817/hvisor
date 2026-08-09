@@ -145,9 +145,8 @@ fn primary_init_early() {
 
     #[cfg(not(test))]
     {
-        use zone::{add_zone, zone_create};
-        let zone = zone_create(root_config).unwrap();
-        add_zone(zone);
+        use zone::zone_create;
+        zone_create(root_config).unwrap();
     }
 
     // crate::pci::pci_test::pcie_test();

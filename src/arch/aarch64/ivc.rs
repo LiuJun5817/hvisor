@@ -151,7 +151,6 @@ impl From<&HvIvcConfig> for IvcRecord {
 
 impl Zone {
     pub fn ivc_init(&mut self, ivc_configs: &[HvIvcConfig]) -> HvResult {
-        let mut inner = self.write();
         for ivc_config in ivc_configs {
             // is_new is ok to remove
             if let Ok((_, start_paddr)) = insert_ivc_record(ivc_config, self.id() as _) {
@@ -163,30 +162,26 @@ impl Zone {
                 );
                 let rw_sec_size: usize = ivc_config.rw_sec_size as usize;
                 let out_sec_size: usize = ivc_config.out_sec_size as usize;
-                inner
-                    .gpm_mut()
-                    .insert(MemoryRegion::new_with_offset_mapper(
-                        ivc_config.shared_mem_ipa as _,
-                        start_paddr,
-                        rw_sec_size as _,
-                        MemFlags::READ | MemFlags::WRITE,
-                    ))?;
+                self.gpm_mut().insert(MemoryRegion::new_with_offset_mapper(
+                    ivc_config.shared_mem_ipa as _,
+                    start_paddr,
+                    rw_sec_size as _,
+                    MemFlags::READ | MemFlags::WRITE,
+                ))?;
                 for i in 0..ivc_config.max_peers as usize {
                     let flags = if i == ivc_config.peer_id as _ {
                         MemFlags::READ | MemFlags::WRITE
                     } else {
                         MemFlags::READ
                     };
-                    inner
-                        .gpm_mut()
-                        .insert(MemoryRegion::new_with_offset_mapper(
-                            ivc_config.shared_mem_ipa as usize + rw_sec_size + i * out_sec_size,
-                            start_paddr + rw_sec_size + i * out_sec_size,
-                            out_sec_size as _,
-                            flags,
-                        ))?;
+                    self.gpm_mut().insert(MemoryRegion::new_with_offset_mapper(
+                        ivc_config.shared_mem_ipa as usize + rw_sec_size + i * out_sec_size,
+                        start_paddr + rw_sec_size + i * out_sec_size,
+                        out_sec_size as _,
+                        flags,
+                    ))?;
                 }
-                inner.mmio_region_register(
+                self.mmio_region_register(
                     ivc_config.control_table_ipa as _,
                     PAGE_SIZE,
                     mmio_ivc_handler,

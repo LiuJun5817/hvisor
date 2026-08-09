@@ -13,8 +13,6 @@
 //
 // Authors:
 //
-use alloc::sync::Arc;
-
 use super::{gicd::GICD_LOCK, is_spi};
 use crate::platform::BOARD_MPIDR_MAPPINGS;
 use crate::{
@@ -37,14 +35,14 @@ pub fn reg_range(base: usize, n: usize, size: usize) -> core::ops::Range<usize> 
 
 impl Zone {
     pub fn vgicv3_mmio_init(&mut self, arch: &HvArchZoneConfig) {
-        let mut inner = self.write();
-        match arch.gic_config {
+        let zone_id = self.id();
+        self.with_inner_mut(|inner| match arch.gic_config {
             GicConfig::Gicv2(_) => {
                 panic!("vgicv3_mmio_init: GICv2 is not supported in this function");
             }
             GicConfig::Gicv3(ref gicv3_config) => {
                 // GICv3 specific initialization
-                info!("Initializing GICv3 MMIO regions for zone {}", self.id());
+                info!("Initializing GICv3 MMIO regions for zone {}", zone_id);
                 if gicv3_config.gicd_base == 0 || gicv3_config.gicr_base == 0 {
                     panic!("vgicv3_mmio_init: gicd_base or gicr_base is null");
                 }
@@ -76,38 +74,37 @@ impl Zone {
                     );
                 }
             }
-        }
+        });
     }
 
     pub fn irq_bitmap_init(&mut self, irqs_bitmap: &[BitmapWord]) {
-        let mut inner = self.write();
-        for i in 0..irqs_bitmap.len() {
-            let word = irqs_bitmap[i];
-
-            for j in 0..CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD {
-                if ((word >> j) & 1) == 1 {
-                    let irq_id = (i * CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD + j) as u32;
-                    assert!(irq_id < (CONFIG_MAX_INTERRUPTS as u32));
-                    let irq_index = irq_id / (CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD as u32);
-                    let irq_bit = irq_id % (CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD as u32);
-                    inner.irq_bitmap_mut()[irq_index as usize] |= 1 << irq_bit;
+        let zone_id = self.id();
+        self.with_inner_mut(|inner| {
+            for (i, word) in irqs_bitmap.iter().copied().enumerate() {
+                for j in 0..CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD {
+                    if ((word >> j) & 1) == 1 {
+                        let irq_id = (i * CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD + j) as u32;
+                        assert!(irq_id < (CONFIG_MAX_INTERRUPTS as u32));
+                        let irq_index = irq_id / (CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD as u32);
+                        let irq_bit = irq_id % (CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD as u32);
+                        inner.irq_bitmap_mut()[irq_index as usize] |= 1 << irq_bit;
+                    }
                 }
             }
-        }
 
-        for (index, &word) in inner.irq_bitmap().iter().enumerate() {
-            for bit_position in 0..CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD {
-                if word & (1 << bit_position) != 0 {
-                    let interrupt_number =
-                        index * CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD + bit_position;
-                    info!(
-                        "Found interrupt in Zone {} irq_bitmap: {}",
-                        self.id(),
-                        interrupt_number
-                    );
+            for (index, &word) in inner.irq_bitmap().iter().enumerate() {
+                for bit_position in 0..CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD {
+                    if word & (1 << bit_position) != 0 {
+                        let interrupt_number =
+                            index * CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD + bit_position;
+                        info!(
+                            "Found interrupt in Zone {} irq_bitmap: {}",
+                            zone_id, interrupt_number
+                        );
+                    }
                 }
             }
-        }
+        });
     }
 }
 
@@ -119,7 +116,6 @@ fn restrict_bitmask_access(
     gicd_base: usize,
 ) -> HvResult {
     let zone = this_zone();
-    let zone_r = zone.read();
     let mut access_mask: usize = 0;
     /*
      * In order to avoid division, the number of bits per irq is limited
@@ -131,7 +127,7 @@ fn restrict_bitmask_access(
     let first_irq = reg_index * irqs_per_reg;
 
     for irq in 0..irqs_per_reg {
-        if zone_r.irq_in_zone((first_irq + irq) as _) {
+        if zone.irq_in_zone((first_irq + irq) as _) {
             trace!("restrict visit irq {}", first_irq + irq);
             access_mask |= irq_bits << (irq * bits_per_irq);
         }
@@ -179,7 +175,7 @@ pub fn vgicv3_redist_handler(mmio: &mut MMIOAccess, cpu: usize) -> HvResult {
                 if !mmio.is_write {
                     mmio_perform_access(gicr_base, mmio);
                 }
-            } else if Arc::ptr_eq(&this_zone(), get_cpu_data(cpu).zone.as_ref().unwrap()) {
+            } else if this_zone().id() == get_cpu_data(cpu).zone.unwrap().id() {
                 mmio_perform_access(gicr_base, mmio);
             } else {
                 if !mmio.is_write {
@@ -246,7 +242,7 @@ pub fn vgicv3_redist_handler(mmio: &mut MMIOAccess, cpu: usize) -> HvResult {
             || reg_range(GICR_SGI_BASE + GICR_IPRIORITYR, 8, 4).contains(&reg)
             || reg_range(GICR_SGI_BASE + GICR_ICFGR, 2, 4).contains(&reg) =>
         {
-            if Arc::ptr_eq(&this_zone(), get_cpu_data(cpu).zone.as_ref().unwrap()) {
+            if this_zone().id() == get_cpu_data(cpu).zone.unwrap().id() {
                 // avoid linux disable maintenance interrupt
                 if reg == GICR_SGI_BASE + GICR_ICENABLER {
                     mmio.value &= !(1 << MAINTENACE_INTERRUPT);
@@ -266,9 +262,8 @@ pub fn vgicv3_redist_handler(mmio: &mut MMIOAccess, cpu: usize) -> HvResult {
 // The return value should be the register value to be read.
 fn vgicv3_handle_irq_ops(mmio: &mut MMIOAccess, irq: u32) -> HvResult {
     let zone = this_zone();
-    let zone_r = zone.read();
 
-    if !is_spi(irq) || !zone_r.irq_in_zone(irq) {
+    if !is_spi(irq) || !zone.irq_in_zone(irq) {
         debug!(
             "gicd-mmio: skip irq {} access, reg = {:#x?}",
             irq, mmio.address
@@ -378,8 +373,7 @@ pub fn vgicv3_its_handler(mmio: &mut MMIOAccess, _arg: usize) -> HvResult {
                 set_dt_baser(mmio.value, zone_id);
                 if zone_id == 0 {
                     let v_dt_addr = mmio.value & 0xfff_fff_fff_000usize;
-                    let phys_dt_trans =
-                        unsafe { this_zone().read().gpm().page_table_query(v_dt_addr) };
+                    let phys_dt_trans = unsafe { this_zone().gpm().page_table_query(v_dt_addr) };
                     match phys_dt_trans {
                         Ok(p) => {
                             mmio.value &= !0xfff_fff_fff_000usize;
@@ -398,8 +392,7 @@ pub fn vgicv3_its_handler(mmio: &mut MMIOAccess, _arg: usize) -> HvResult {
                 set_ct_baser(mmio.value, zone_id);
                 if zone_id == 0 {
                     let v_ct_addr = mmio.value & 0xfff_fff_fff_000usize;
-                    let phys_ct_trans =
-                        unsafe { this_zone().read().gpm().page_table_query(v_ct_addr) };
+                    let phys_ct_trans = unsafe { this_zone().gpm().page_table_query(v_ct_addr) };
                     match phys_ct_trans {
                         Ok(p) => {
                             mmio.value &= !0xfff_fff_fff_000usize;

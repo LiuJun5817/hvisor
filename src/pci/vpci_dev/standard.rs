@@ -98,13 +98,12 @@ impl VpciDeviceHandler for StandardHandler {
                 } else {
                     dev.with_bar_ref_mut(slot, |bar| bar.set_virtual_value(value as u64));
                     let zone = this_zone();
-                    let mut guard = zone.write();
                     pci_virt_log!(
                         "virtual pci standard write_cfg, register mmio region {:#x}, size {:#x}",
                         value,
                         bar_size
                     );
-                    guard.mmio_region_register(
+                    zone.mmio_region_register(
                         value as usize,
                         bar_size as usize,
                         mmio_vdev_standard_handler,

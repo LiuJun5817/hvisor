@@ -13,7 +13,6 @@
 //
 // Authors:
 //
-use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::arch::cpu::{store_cpu_pointer_to_reg, this_cpu_id, ArchCpu};
@@ -107,7 +106,7 @@ pub struct PerCpu {
     pub dtb_ipa: usize,
     pub vcpu_state: VcpuStateCell,
     pub arch_cpu: ArchCpu,
-    pub zone: Option<Arc<Zone>>,
+    pub zone: Option<Zone>,
     pub ctrl_lock: Mutex<()>,
     pub boot_cpu: bool,
     // percpu stack
@@ -160,7 +159,7 @@ impl PerCpu {
 
     pub fn activate_gpm(&self) {
         unsafe {
-            self.zone.clone().unwrap().read().gpm().activate();
+            self.zone.unwrap().gpm().activate();
         }
     }
 }
@@ -176,8 +175,8 @@ pub fn this_cpu_data<'a>() -> &'a mut PerCpu {
 }
 
 #[allow(unused)]
-pub fn this_zone() -> Arc<Zone> {
-    this_cpu_data().zone.clone().unwrap()
+pub fn this_zone() -> Zone {
+    this_cpu_data().zone.unwrap()
 }
 
 /// Enter blocked state and wait until another CPU resumes it.

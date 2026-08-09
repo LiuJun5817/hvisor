@@ -26,7 +26,6 @@ use crate::{
 
 impl Zone {
     pub fn pt_init(&mut self, mem_regions: &[HvConfigMemoryRegion]) -> HvResult {
-        let mut inner = self.write();
         // The first memory region is used to map the guest physical memory.
 
         for mem_region in mem_regions.iter() {
@@ -36,17 +35,15 @@ impl Zone {
             }
             match mem_region.mem_type {
                 MEM_TYPE_RAM | MEM_TYPE_IO => {
-                    inner
-                        .gpm_mut()
-                        .insert(MemoryRegion::new_with_offset_mapper(
-                            mem_region.virtual_start as GuestPhysAddr,
-                            mem_region.physical_start as HostPhysAddr,
-                            mem_region.size as _,
-                            flags,
-                        ))?
+                    self.gpm_mut().insert(MemoryRegion::new_with_offset_mapper(
+                        mem_region.virtual_start as GuestPhysAddr,
+                        mem_region.physical_start as HostPhysAddr,
+                        mem_region.size as _,
+                        flags,
+                    ))?
                 }
                 MEM_TYPE_VIRTIO => {
-                    inner.mmio_region_register(
+                    self.mmio_region_register(
                         mem_region.physical_start as _,
                         mem_region.size as _,
                         mmio_virtio_handler,
@@ -70,7 +67,7 @@ impl Zone {
             }
         }
 
-        info!("VM stage 2 memory set: {:#x?}", inner.gpm());
+        info!("VM stage 2 memory set: {:#x?}", self.gpm());
         Ok(())
     }
 
@@ -79,11 +76,10 @@ impl Zone {
         mem_regions: &[HvConfigMemoryRegion],
         hv_config: &HvArchZoneConfig,
     ) -> HvResult {
-        let mut inner = self.write();
         // Create a new stage 2 page table for iommu.
         // Only map the memory regions that are possible to be accessed by devices as DMA buffer.
 
-        let pt = inner.iommu_pt_mut().unwrap();
+        let mut pt = self.iommu_pt_mut().unwrap();
         let flags = MemFlags::READ | MemFlags::WRITE;
         for mem_region in mem_regions.iter() {
             match mem_region.mem_type {

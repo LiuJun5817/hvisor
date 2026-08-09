@@ -12,6 +12,7 @@ use crate::memory::{
     mm::MemoryRegion as HvisorMemoryRegion,
     MemFlags, PhysAddr, PAGE_SIZE,
 };
+use crate::zone::ZonePayload;
 use alloc::boxed::Box;
 use core::fmt::{Debug, Formatter, Result as FmtResult};
 use spin::Once;
@@ -149,8 +150,14 @@ pub type VeriHyMemPageTable = ExPageTable<BitAlloc1M, HvisorPTE>;
 pub type VeriHyMemMemorySet = VecMemorySet<VeriHyMemPageTable, BitAlloc1M, HvisorHardware>;
 
 /// Concrete global memory manager used by hvisor.
-pub type HvisorHvMem =
-    HvMem<VeriHyMemPageTable, VeriHyMemMemorySet, BitAlloc1M, BudgetProtocol, HvisorHardware>;
+pub type HvisorHvMem = HvMem<
+    VeriHyMemPageTable,
+    VeriHyMemMemorySet,
+    BitAlloc1M,
+    BudgetProtocol,
+    HvisorHardware,
+    ZonePayload,
+>;
 
 static HV_MEM: Once<Box<HvisorHvMem>> = Once::new();
 
@@ -199,12 +206,14 @@ pub fn init() {
 ///
 /// The page table and region metadata live in `HvisorHvMem`; this value only
 /// identifies the zone and whether the CPU or IOMMU stage-2 set is addressed.
+#[derive(Clone, Copy)]
 pub struct VMemorySet {
     zone_id: usize,
     iommu: bool,
 }
 
 impl VMemorySet {
+    /// Create a handle of a zone's memory set, either for CPU or IOMMU stage-2 translation.
     pub const fn new(zone_id: usize, iommu: bool) -> Self {
         Self { zone_id, iommu }
     }
@@ -218,6 +227,7 @@ impl VMemorySet {
         root.expect("HvMem zone is not registered").0
     }
 
+    /// Insert a memory region into the zone's memory set.
     pub fn insert(&mut self, region: HvisorMemoryRegion<GuestPhysAddr>) -> HvResult {
         if region.size == 0 {
             return Ok(());
@@ -231,6 +241,7 @@ impl VMemorySet {
         result.map_err(|_| hv_err!(EINVAL, "memory region insertion failed"))
     }
 
+    /// Delete a memory region from the zone's memory set.
     pub fn delete(&mut self, start: GuestPhysAddr, size: usize) -> HvResult {
         let region = make_memory_region(start, 0, size, MemFlags::empty());
         let result = if self.iommu {

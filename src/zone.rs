@@ -13,34 +13,25 @@
 //
 // Authors:
 //
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 // use psci::error::INVALID_ADDRESS;
-use crate::consts::{INVALID_ADDRESS, MAX_CPU_NUM};
+use crate::consts::{INVALID_ADDRESS, MAX_CPU_NUM, MAX_ZONE_NUM};
 use crate::pci::pci_struct::VirtualRootComplex;
-use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[cfg(dwc_pcie)]
 use crate::pci::{config_accessors::dwc_atu::AtuConfig, PciConfigAddress};
 #[cfg(dwc_pcie)]
 use alloc::collections::btree_map::BTreeMap;
 
-#[cfg(not(target_arch = "aarch64"))]
-use crate::arch::mm::new_s2_memory_set;
-#[cfg(not(target_arch = "aarch64"))]
-use crate::arch::s2pt::Stage2PageTable;
 use crate::config::{HvZoneConfig, CONFIG_NAME_MAXLEN};
 
 use crate::cpu_data::{get_cpu_data, this_zone, CpuSet};
 use crate::error::HvResult;
 use crate::memory::addr::GuestPhysAddr;
-#[cfg(not(target_arch = "aarch64"))]
-use crate::memory::MemorySet;
-#[cfg(target_arch = "aarch64")]
+use crate::memory::verihymem::hv_mem;
 use crate::memory::VMemorySet;
 use crate::memory::{MMIOConfig, MMIOHandler, MMIORegion};
 use core::panic;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(all(pci_init_delay, dwc_pcie))]
 use crate::config::{HvPciConfig, HvPciDevConfig, CONFIG_MAX_PCI_DEV, CONFIG_PCI_BUS_MAXNUM};
@@ -114,47 +105,44 @@ impl VirtualAtuConfigs {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Zone {
-    name: [u8; CONFIG_NAME_MAXLEN],
     id: usize,
-    is_err: AtomicBool,
-    inner: RwLock<ZoneInner>,
 }
 
-#[cfg(target_arch = "aarch64")]
-type ZoneMemorySet = VMemorySet;
-#[cfg(not(target_arch = "aarch64"))]
-type ZoneMemorySet = MemorySet<Stage2PageTable>;
-
-pub struct ZoneInner {
+/// hvisor-owned state stored inside VeriHyMem's per-zone inner lock.
+pub struct ZonePayload {
+    name: [u8; CONFIG_NAME_MAXLEN],
+    is_err: bool,
     mmio: Vec<MMIOConfig>,
     cpu_num: usize,
     cpu_set: CpuSet,
     irq_bitmap: [u32; 1024 / 32],
-    gpm: ZoneMemorySet,
-    iommu_pt: Option<ZoneMemorySet>,
     vpci_bus: VirtualRootComplex,
     #[cfg(dwc_pcie)]
     atu_configs: VirtualAtuConfigs,
 }
 
 impl Zone {
-    #[allow(dead_code)]
-    pub fn new(zoneid: usize, name: &[u8]) -> Self {
-        Self {
-            name: name.try_into().unwrap(),
-            id: zoneid,
-            is_err: AtomicBool::new(false),
-            inner: RwLock::new(ZoneInner::new(zoneid)),
-        }
+    pub const fn new(zone_id: usize) -> Self {
+        Self { id: zone_id }
     }
 
-    pub fn read(&self) -> RwLockReadGuard<'_, ZoneInner> {
-        self.inner.read()
+    /// Get the ZonePayload for this zone, and apply the provided immutable closure to it.
+    pub(crate) fn with_inner<R>(&self, f: impl FnOnce(&ZonePayload) -> R) -> R {
+        hv_mem()
+            .with_zone_payload(self.id, f)
+            .expect("zone is not registered in HvisorHvMem")
     }
 
-    pub fn write(&self) -> RwLockWriteGuard<'_, ZoneInner> {
-        self.inner.write()
+    /// Get the ZonePayload for this zone, and apply the provided mutable closure to it.
+    pub(crate) fn with_inner_mut<R>(&self, f: impl FnOnce(&mut ZonePayload) -> R) -> R {
+        hv_mem()
+            .with_zone_payload_mut(self.id, |mut payload| {
+                let result = f(&mut payload);
+                (payload, result)
+            })
+            .expect("zone is not registered in HvisorHvMem")
     }
 
     pub fn id(&self) -> usize {
@@ -162,49 +150,89 @@ impl Zone {
     }
 
     pub fn name(&self) -> [u8; CONFIG_NAME_MAXLEN] {
-        self.name
+        self.with_inner(|inner| inner.name)
     }
 
     pub fn is_err(&self) -> bool {
-        self.is_err.load(Ordering::Acquire)
+        self.with_inner(|inner| inner.is_err)
     }
 
     pub fn set_err(&self) {
-        self.is_err.store(true, Ordering::Release);
+        self.with_inner_mut(|inner| inner.is_err = true);
     }
 
     pub fn cpu_set(&self) -> CpuSet {
-        self.read().cpu_set()
+        self.with_inner(|inner| inner.cpu_set())
+    }
+
+    pub fn cpu_num(&self) -> usize {
+        self.with_inner(|inner| inner.cpu_num())
+    }
+
+    pub fn gpm(&self) -> VMemorySet {
+        VMemorySet::new(self.id, false)
+    }
+
+    pub fn gpm_mut(&self) -> VMemorySet {
+        self.gpm()
+    }
+
+    pub fn iommu_pt(&self) -> Option<VMemorySet> {
+        cfg!(iommu).then(|| VMemorySet::new(self.id, true))
+    }
+
+    pub fn iommu_pt_mut(&self) -> Option<VMemorySet> {
+        self.iommu_pt()
+    }
+
+    pub fn mmio_region_register(
+        &self,
+        start: GuestPhysAddr,
+        size: usize,
+        handler: MMIOHandler,
+        arg: usize,
+    ) {
+        self.with_inner_mut(|inner| inner.mmio_region_register(start, size, handler, arg));
+    }
+
+    pub fn mmio_region_remove(&self, start: GuestPhysAddr) {
+        self.with_inner_mut(|inner| inner.mmio_region_remove(start));
+    }
+
+    pub fn find_mmio_region(
+        &self,
+        addr: GuestPhysAddr,
+        size: usize,
+    ) -> Option<(MMIORegion, MMIOHandler, usize)> {
+        self.with_inner(|inner| inner.find_mmio_region(addr, size))
+    }
+
+    pub fn irq_in_zone(&self, irq_id: u32) -> bool {
+        self.with_inner(|inner| inner.irq_in_zone(irq_id))
+    }
+
+    pub fn irq_bitmap(&self) -> [u32; 1024 / 32] {
+        self.with_inner(|inner| *inner.irq_bitmap())
+    }
+
+    pub fn with_vpci_bus<R>(&self, f: impl FnOnce(&VirtualRootComplex) -> R) -> R {
+        self.with_inner(|inner| f(inner.vpci_bus()))
+    }
+
+    pub fn with_vpci_bus_mut<R>(&self, f: impl FnOnce(&mut VirtualRootComplex) -> R) -> R {
+        self.with_inner_mut(|inner| f(inner.vpci_bus_mut()))
     }
 }
 
-impl ZoneInner {
-    pub fn new(zone_id: usize) -> Self {
-        #[cfg(target_arch = "aarch64")]
-        let gpm = VMemorySet::new(zone_id, false);
-        #[cfg(not(target_arch = "aarch64"))]
-        let gpm = new_s2_memory_set();
-
-        #[cfg(target_arch = "aarch64")]
-        let iommu_pt = if cfg!(iommu) {
-            Some(VMemorySet::new(zone_id, true))
-        } else {
-            None
-        };
-        #[cfg(not(target_arch = "aarch64"))]
-        let iommu_pt = if cfg!(iommu) {
-            Some(new_s2_memory_set())
-        } else {
-            None
-        };
-
+impl ZonePayload {
+    pub fn new(name: &[u8]) -> Self {
         Self {
-            gpm,
+            name: name.try_into().unwrap(),
+            is_err: false,
             mmio: Vec::new(),
             cpu_num: 0,
             cpu_set: CpuSet::new(MAX_CPU_NUM as usize, 0),
             irq_bitmap: [0; 1024 / 32],
-            iommu_pt,
             vpci_bus: VirtualRootComplex::new(),
             #[cfg(dwc_pcie)]
             atu_configs: VirtualAtuConfigs::new(),
@@ -309,22 +337,6 @@ impl ZoneInner {
         &mut self.irq_bitmap
     }
 
-    pub fn gpm(&self) -> &ZoneMemorySet {
-        &self.gpm
-    }
-
-    pub fn gpm_mut(&mut self) -> &mut ZoneMemorySet {
-        &mut self.gpm
-    }
-
-    pub fn iommu_pt(&self) -> Option<&ZoneMemorySet> {
-        self.iommu_pt.as_ref()
-    }
-
-    pub fn iommu_pt_mut(&mut self) -> Option<&mut ZoneMemorySet> {
-        self.iommu_pt.as_mut()
-    }
-
     pub fn vpci_bus(&self) -> &VirtualRootComplex {
         &self.vpci_bus
     }
@@ -351,6 +363,8 @@ impl ZoneInner {
         num_pci_devs: u64,
         pci_config: &[HvPciConfig],
         _num_pci_config: usize,
+        gpm_root: usize,
+        iommu_pt_addr: usize,
     ) -> HvResult {
         let guard = GLOBAL_PCIE_LIST.lock();
         for target_pci_config in pci_config {
@@ -450,11 +464,6 @@ impl ZoneInner {
                     target_arch = "x86_64"
                 ))]
                 {
-                    let iommu_pt_addr = if self.iommu_pt().is_some() {
-                        self.iommu_pt().unwrap().root_paddr()
-                    } else {
-                        0
-                    };
                     let device_id = (dev_config.bus as usize) << 8
                         | (dev_config.device as usize) << 3
                         | dev_config.function as usize;
@@ -462,7 +471,7 @@ impl ZoneInner {
                     crate::device::iommu::iommu_add_device_with_root_pt_addr(
                         _zone_id,
                         device_id as _,
-                        self.gpm().root_paddr(),
+                        gpm_root,
                     );
                     #[cfg(not(share_s2pt))]
                     crate::device::iommu::iommu_add_device_with_root_pt_addr(
@@ -753,54 +762,37 @@ impl ZoneInner {
     }
 }
 
-static ZONE_LIST: RwLock<Vec<Arc<Zone>>> = RwLock::new(vec![]);
-
-pub fn root_zone() -> Arc<Zone> {
-    ZONE_LIST.read().get(0).cloned().unwrap()
+pub fn root_zone() -> Zone {
+    find_zone(0).expect("root zone is not registered")
 }
 
 pub fn is_this_root_zone() -> bool {
-    Arc::ptr_eq(&this_zone(), &root_zone())
+    this_zone_id() == 0
 }
 
-/// Add zone to CELL_LIST
-pub fn add_zone(zone: Arc<Zone>) {
-    ZONE_LIST.write().push(zone);
-}
-
-/// Remove zone from ZONE_LIST
 pub fn remove_zone(zone_id: usize) {
-    let mut zone_list = ZONE_LIST.write();
-    let (idx, _) = zone_list
-        .iter()
-        .enumerate()
-        .find(|(_, zone)| zone.id() == zone_id)
-        .unwrap();
-    let removed_zone = zone_list.remove(idx);
-    
-    // Remove the zone from HvMem correspondingly
-    #[cfg(target_arch = "aarch64")]
-    crate::memory::verihymem::hv_mem().remove_zone(zone_id);
-
-    assert_eq!(Arc::strong_count(&removed_zone), 1);
+    let hv_mem = hv_mem();
+    hv_mem
+        .clear(zone_id)
+        .expect("failed to clear zone CPU mappings from HvisorHvMem");
+    hv_mem
+        .clear_iommu(zone_id)
+        .expect("failed to clear zone IOMMU mappings from HvisorHvMem");
+    hv_mem
+        .remove_zone(zone_id)
+        .expect("failed to remove zone from HvisorHvMem");
 }
 
-pub fn find_zone(zone_id: usize) -> Option<Arc<Zone>> {
-    ZONE_LIST
-        .read()
-        .iter()
-        .find(|zone| zone.id() == zone_id)
-        .cloned()
+pub fn find_zone(zone_id: usize) -> Option<Zone> {
+    hv_mem().with_zone(zone_id, |_| Zone::new(zone_id))
 }
 
 pub fn all_zones_info() -> Vec<ZoneInfo> {
-    let zone_list = ZONE_LIST.read();
-
-    zone_list
-        .iter()
+    (0..MAX_ZONE_NUM)
+        .filter_map(find_zone)
         .map(|zone| ZoneInfo {
             zone_id: zone.id() as u32,
-            cpus: zone.read().cpu_set().bitmap,
+            cpus: zone.cpu_set().bitmap,
             name: zone.name(),
             is_err: zone.is_err() as u8,
         })
@@ -811,7 +803,7 @@ pub fn this_zone_id() -> usize {
     this_zone().id()
 }
 
-pub fn zone_create(config: &HvZoneConfig) -> HvResult<Arc<Zone>> {
+pub fn zone_create(config: &HvZoneConfig) -> HvResult<Zone> {
     // we create the new zone here
     // TODO: create Zone with cpu_set
     let zone_id = config.zone_id as usize;
@@ -823,11 +815,21 @@ pub fn zone_create(config: &HvZoneConfig) -> HvResult<Arc<Zone>> {
         );
     }
 
-    // Insert the zone into HvMem first to register the zone, so the VMemorySet can be created
-    // and operated with the correct zone_id.
-    #[cfg(target_arch = "aarch64")]
-    if crate::memory::verihymem::hv_mem()
-        .add_zone(zone_id)
+    for cpu_id in config.cpus().iter() {
+        if let Some(existing_zone) = get_cpu_data(*cpu_id as _).zone {
+            return hv_result_err!(
+                EBUSY,
+                format!(
+                    "Failed to create zone: cpu {} already belongs to zone {}",
+                    cpu_id,
+                    existing_zone.id()
+                )
+            );
+        }
+    }
+
+    if hv_mem()
+        .add_zone(zone_id, ZonePayload::new(&config.name))
         .is_err()
     {
         return hv_result_err!(
@@ -839,115 +841,118 @@ pub fn zone_create(config: &HvZoneConfig) -> HvResult<Arc<Zone>> {
         );
     }
 
-    let mut zone = Zone::new(zone_id, &config.name);
-    zone.pt_init(config.memory_regions())?;
-    zone.mmio_init(&config.arch_config);
+    let mut zone = Zone::new(zone_id);
+    let init_result = (|| -> HvResult {
+        zone.pt_init(config.memory_regions())?;
+        zone.mmio_init(&config.arch_config);
 
-    let mut cpu_num = 0;
-    for cpu_id in config.cpus().iter() {
-        if let Some(existing_zone) = get_cpu_data(*cpu_id as _).zone.clone() {
-            return hv_result_err!(
-                EBUSY,
-                format!(
-                    "Failed to create zone: cpu {} already belongs to zone {}",
-                    cpu_id,
-                    existing_zone.id()
-                )
-            );
+        let mut cpu_num = 0;
+        for cpu_id in config.cpus().iter() {
+            zone.with_inner_mut(|inner| inner.cpu_set_mut().set_bit(*cpu_id as _));
+            cpu_num += 1;
         }
-        zone.write().cpu_set_mut().set_bit(*cpu_id as _);
-        cpu_num += 1;
-    }
-    zone.write().set_cpu_num(cpu_num);
+        zone.with_inner_mut(|inner| inner.set_cpu_num(cpu_num));
 
-    #[cfg(pci)]
-    {
-        #[cfg(pci_init_delay)]
+        #[cfg(pci)]
         {
-            #[cfg(dwc_pcie)]
+            #[cfg(pci_init_delay)]
             {
-                let num_pci_bus = config.num_pci_bus as usize;
-                if zone_id == 0 {
-                    let mut inner = zone.write();
-                    inner.virtual_pci_dbi_pref_init(&config.pci_config, num_pci_bus);
-                } else {
-                    let _ = zone.virtual_pci_mmio_init(&config.pci_config, num_pci_bus);
-                    let _ = zone.guest_pci_init(
-                        zone_id,
-                        &config.alloc_pci_devs,
-                        config.num_pci_devs,
-                        &config.pci_config,
-                        num_pci_bus,
-                    );
+                #[cfg(dwc_pcie)]
+                {
+                    let num_pci_bus = config.num_pci_bus as usize;
+                    if zone_id == 0 {
+                        zone.with_inner_mut(|inner| {
+                            inner.virtual_pci_dbi_pref_init(&config.pci_config, num_pci_bus)
+                        });
+                    } else {
+                        let _ = zone.virtual_pci_mmio_init(&config.pci_config, num_pci_bus);
+                        let _ = zone.guest_pci_init(
+                            zone_id,
+                            &config.alloc_pci_devs,
+                            config.num_pci_devs,
+                            &config.pci_config,
+                            num_pci_bus,
+                        );
+                    }
                 }
+            }
+
+            #[cfg(not(pci_init_delay))]
+            {
+                let _ = zone.virtual_pci_mmio_init(&config.pci_config, config.num_pci_bus as usize);
+                let _ = zone.guest_pci_init(
+                    zone_id,
+                    &config.alloc_pci_devs,
+                    config.num_pci_devs,
+                    &config.pci_config,
+                    config.num_pci_bus as usize,
+                );
             }
         }
 
-        #[cfg(not(pci_init_delay))]
+        #[cfg(viommu)]
         {
-            let _ = zone.virtual_pci_mmio_init(&config.pci_config, config.num_pci_bus as usize);
-            let _ = zone.guest_pci_init(
-                zone_id,
-                &config.alloc_pci_devs,
-                config.num_pci_devs,
-                &config.pci_config,
-                config.num_pci_bus as usize,
+            use crate::platform::{IOMMU_SYS_BASE, IOMMU_SYS_SIZE};
+            // Create viommu instance and register mmio handler for target zone.
+            crate::device::iommu::viommu_init(zone_id);
+            crate::device::iommu::viommu_mmio_handler_register(
+                &zone,
+                IOMMU_SYS_BASE,
+                IOMMU_SYS_SIZE,
             );
         }
+
+        // #[cfg(target_arch = "aarch64")]
+        // zone.ivc_init(config.ivc_config());
+
+        /* loongarch page table emergency */
+        /* Kai: Maybe unnecessary but i can't boot vms on my 3A6000 PC without this function. */
+        // #[cfg(target_arch = "loongarch64")]
+        // zone.page_table_emergency(
+        //     config.pci_config[0].ecam_base as _,
+        //     config.pci_config[0].ecam_size as _,
+        // )?;
+
+        zone.arch_zone_pre_configuration(config)?;
+        // #[cfg(target_arch = "aarch64")]
+        // zone.ivc_init(config.ivc_config());
+
+        #[cfg(all(iommu, target_arch = "aarch64"))]
+        zone.iommu_pt_init(config.memory_regions(), &config.arch_config)?;
+
+        /* loongarch page table emergency */
+        /* Kai: Maybe unnecessary but i can't boot vms on my 3A6000 PC without this function. */
+        // #[cfg(target_arch = "loongarch64")]
+        // zone.page_table_emergency(
+        //     config.pci_config.ecam_base as _,
+        //     config.pci_config.ecam_size as _,
+        // )?;
+
+        /*zone.pci_init(
+            &config.pci_config,
+            config.num_pci_devs as _,
+            &config.alloc_pci_devs,
+        );*/
+
+        zone.arch_zone_post_configuration(config)?;
+
+        // Reset the zone arch-related resources, e.g. invalid data cache
+        zone.arch_zone_reset(config)?;
+
+        // Initialize the virtual interrupt controller, it needs zone.cpu_num
+        zone.virqc_init(config);
+
+        zone.irq_bitmap_init(config.interrupts_bitmap());
+        Ok(())
+    })();
+
+    if let Err(error) = init_result {
+        remove_zone(zone_id);
+        return Err(error);
     }
 
-    #[cfg(viommu)]
-    {
-        use crate::platform::{IOMMU_SYS_BASE, IOMMU_SYS_SIZE};
-        // Create viommu instance and register mmio handler for target zone.
-        crate::device::iommu::viommu_init(zone_id);
-        crate::device::iommu::viommu_mmio_handler_register(&zone, IOMMU_SYS_BASE, IOMMU_SYS_SIZE);
-    }
-
-    // #[cfg(target_arch = "aarch64")]
-    // zone.ivc_init(config.ivc_config());
-
-    /* loongarch page table emergency */
-    /* Kai: Maybe unnecessary but i can't boot vms on my 3A6000 PC without this function. */
-    // #[cfg(target_arch = "loongarch64")]
-    // zone.page_table_emergency(
-    //     config.pci_config[0].ecam_base as _,
-    //     config.pci_config[0].ecam_size as _,
-    // )?;
-
-    let cpu_set = zone.read().cpu_set();
+    let cpu_set = zone.cpu_set();
     info!("zone cpu_set: {:#b}", cpu_set.bitmap);
-
-    zone.arch_zone_pre_configuration(config)?;
-    // #[cfg(target_arch = "aarch64")]
-    // zone.ivc_init(config.ivc_config());
-
-    #[cfg(all(iommu, target_arch = "aarch64"))]
-    zone.iommu_pt_init(config.memory_regions(), &config.arch_config)?;
-
-    /* loongarch page table emergency */
-    /* Kai: Maybe unnecessary but i can't boot vms on my 3A6000 PC without this function. */
-    // #[cfg(target_arch = "loongarch64")]
-    // zone.page_table_emergency(
-    //     config.pci_config.ecam_base as _,
-    //     config.pci_config.ecam_size as _,
-    // )?;
-
-    /*zone.pci_init(
-        &config.pci_config,
-        config.num_pci_devs as _,
-        &config.alloc_pci_devs,
-    );*/
-
-    zone.arch_zone_post_configuration(config)?;
-
-    // Reset the zone arch-related resources, e.g. invalid data cache
-    zone.arch_zone_reset(config)?;
-
-    // Initialize the virtual interrupt controller, it needs zone.cpu_num
-    zone.virqc_init(config);
-
-    zone.irq_bitmap_init(config.interrupts_bitmap());
 
     let mut dtb_ipa = INVALID_ADDRESS as u64;
     for region in config.memory_regions() {
@@ -959,25 +964,22 @@ pub fn zone_create(config: &HvZoneConfig) -> HvResult<Arc<Zone>> {
         }
     }
 
-    let new_zone_pointer = Arc::new(zone);
-    {
-        cpu_set.iter().for_each(|cpuid| {
-            let cpu_data = get_cpu_data(cpuid);
-            cpu_data.zone = Some(new_zone_pointer.clone());
-            //chose boot cpu
-            if cpuid == cpu_set.first_cpu().unwrap() {
-                cpu_data.boot_cpu = true;
-            }
-            cpu_data.cpu_on_entry = config.entry_point as _;
-            cpu_data.dtb_ipa = dtb_ipa as _;
-            #[cfg(target_arch = "aarch64")]
-            {
-                cpu_data.arch_cpu.is_aarch32 = config.arch_config.is_aarch32 != 0;
-            }
-        });
-    }
+    cpu_set.iter().for_each(|cpuid| {
+        let cpu_data = get_cpu_data(cpuid);
+        cpu_data.zone = Some(zone);
+        //chose boot cpu
+        if cpuid == cpu_set.first_cpu().unwrap() {
+            cpu_data.boot_cpu = true;
+        }
+        cpu_data.cpu_on_entry = config.entry_point as _;
+        cpu_data.dtb_ipa = dtb_ipa as _;
+        #[cfg(target_arch = "aarch64")]
+        {
+            cpu_data.arch_cpu.is_aarch32 = config.arch_config.is_aarch32 != 0;
+        }
+    });
 
-    Ok(new_zone_pointer)
+    Ok(zone)
 }
 
 #[repr(C)]
@@ -988,7 +990,6 @@ pub struct ZoneInfo {
     name: [u8; CONFIG_NAME_MAXLEN],
     is_err: u8,
 }
-// Be careful about dead lock for zone.write()
 pub fn zone_error() {
     if is_this_root_zone() {
         panic!("root zone has some error");
@@ -998,20 +999,4 @@ pub fn zone_error() {
     error!("zone {} has some error, please shut down it", zone_id);
 
     zone.set_err();
-    drop(zone);
-}
-
-#[test_case]
-fn test_add_and_remove_zone() {
-    let zone_count = 50;
-    let zone_count_before = ZONE_LIST.read().len();
-    for i in 0..zone_count {
-        let u8name_array = [i as u8; CONFIG_NAME_MAXLEN];
-        let zone = Zone::new(i, &u8name_array);
-        ZONE_LIST.write().push(Arc::new(zone));
-    }
-    for i in 0..zone_count {
-        remove_zone(i);
-    }
-    assert_eq!(ZONE_LIST.read().len(), zone_count_before);
 }

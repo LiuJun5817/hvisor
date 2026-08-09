@@ -430,7 +430,7 @@ fn handle_psci_smc(
             let zone_id = zone.id();
             let is_root = is_this_root_zone();
 
-            for cpu_id in zone.read().cpu_set().iter_except(this_cpu_data().id) {
+            for cpu_id in zone.cpu_set().iter_except(this_cpu_data().id) {
                 let target_cpu = get_cpu_data(cpu_id);
                 let _lock = target_cpu.ctrl_lock.lock();
                 target_cpu.zone = None;
@@ -438,7 +438,6 @@ fn handle_psci_smc(
             }
 
             this_cpu_data().zone = None;
-            drop(zone);
             remove_zone(zone_id);
 
             if is_root {

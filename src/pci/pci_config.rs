@@ -196,7 +196,9 @@ impl Zone {
         pci_config: &[HvPciConfig],
         _num_pci_config: usize,
     ) -> HvResult {
-        let mut inner = self.write();
+        let iommu_pt_addr = self.iommu_pt().map(|pt| pt.root_paddr()).unwrap_or(0);
+        let gpm_root = self.gpm().root_paddr();
+        self.with_inner_mut(|inner| {
         let guard = GLOBAL_PCIE_LIST.lock();
         for target_pci_config in pci_config {
             // Skip empty config
@@ -305,11 +307,6 @@ impl Zone {
 
                 #[cfg(iommu)]
                 {
-                    let iommu_pt_addr = if inner.iommu_pt().is_some() {
-                        inner.iommu_pt().unwrap().root_paddr()
-                    } else {
-                        0
-                    };
                     let device_id = (dev_config.bus as usize) << 8
                         | (dev_config.device as usize) << 3
                         | dev_config.function as usize;
@@ -317,7 +314,7 @@ impl Zone {
                     iommu_add_device_with_root_pt_addr(
                         _zone_id,
                         device_id as _,
-                        inner.gpm().root_paddr(),
+                        gpm_root,
                     );
                     #[cfg(not(share_s2pt))]
                     iommu_add_device_with_root_pt_addr(_zone_id, device_id as _, iommu_pt_addr);
@@ -438,6 +435,7 @@ impl Zone {
         }
         info!("vpci bus init done\n {:#x?}", inner.vpci_bus());
         Ok(())
+        })
     }
 
     pub fn virtual_pci_mmio_init(
@@ -448,137 +446,137 @@ impl Zone {
         #[cfg(loongarch64_pcie)]
         let mut emergency_map_regions: Vec<(usize, usize)> = Vec::new();
 
-        let mut inner = self.write();
-        for rootcomplex_config in pci_rootcomplex_config {
-            /* empty config */
+        self.with_inner_mut(|inner| {
+            for rootcomplex_config in pci_rootcomplex_config {
+                /* empty config */
 
-            if rootcomplex_config.ecam_base == 0 {
-                continue;
-            }
-            #[cfg(ecam_pcie)]
-            {
-                // use crate::pci::pci_handler::mmio_vpci_direct_handler;
-                inner.mmio_region_register(
-                    rootcomplex_config.ecam_base as usize,
-                    rootcomplex_config.ecam_size as usize,
-                    mmio_vpci_handler,
-                    // mmio_vpci_direct_handler,
-                    rootcomplex_config.ecam_base as usize,
-                );
-            }
-            #[cfg(dwc_pcie)]
-            {
-                // Encode domain_id into the arg parameter: arg = ecam_base + domain_id
-                // Since ecam_base is 4KB aligned, its low 12 bits are 0
-                // domain_id (0-15) fits in the low bits without interfering
-                let encoded_arg =
-                    rootcomplex_config.ecam_base as usize + (rootcomplex_config.domain as usize);
-                inner.mmio_region_register(
-                    rootcomplex_config.ecam_base as usize,
-                    rootcomplex_config.ecam_size as usize,
-                    mmio_vpci_handler_dbi,
-                    encoded_arg,
-                );
-
-                let extend_config = platform::ROOT_DWC_ATU_CONFIG
-                    .iter()
-                    .find(|extend_cfg| extend_cfg.ecam_base == rootcomplex_config.ecam_base);
-
-                if let Some(extend_config) = extend_config {
-                    if extend_config.apb_base != 0 && extend_config.apb_size != 0 {
-                        inner.mmio_region_register(
-                            extend_config.apb_base as usize,
-                            extend_config.apb_size as usize,
-                            mmio_generic_handler,
-                            extend_config.apb_base as usize,
-                        );
-                    }
-
-                    let cfg_size_half = extend_config.cfg_size / 2;
-                    let cfg0_base = extend_config.cfg_base;
-                    if cfg0_base != 0 && cfg_size_half != 0 {
-                        inner.mmio_region_register(
-                            cfg0_base as usize,
-                            cfg_size_half as usize,
-                            mmio_dwc_cfg_handler,
-                            cfg0_base as usize,
-                        );
-                    }
-
-                    let cfg1_base = extend_config.cfg_base + cfg_size_half;
-                    if cfg1_base != 0 && cfg_size_half != 0 {
-                        inner.mmio_region_register(
-                            cfg1_base as usize,
-                            cfg_size_half as usize,
-                            mmio_dwc_cfg_handler,
-                            cfg1_base as usize,
-                        );
-                    }
-
-                    if extend_config.io_cfg_atu_shared != 0 {
-                        inner.mmio_region_register(
-                            rootcomplex_config.io_base as usize,
-                            rootcomplex_config.io_size as usize,
-                            mmio_dwc_io_handler,
-                            rootcomplex_config.io_base as usize,
-                        );
-                    }
-
-                    let mut atu = AtuConfig::default();
-
-                    let dbi_base = extend_config.dbi_base as PciConfigAddress;
-                    let dbi_size = extend_config.dbi_size;
-                    let dbi_region = PciRegionMmio::new(dbi_base, dbi_size);
-                    let dbi_backend = DwcConfigRegionBackend::new(dbi_region);
-                    if let Err(e) = atu.init_limit_hw_value(&dbi_backend) {
-                        warn!("Failed to initialize ATU0 limit defaults: {:?}", e);
-                    }
-
-                    inner
-                        .atu_configs_mut()
-                        .insert_atu(rootcomplex_config.ecam_base as usize, atu);
-                    inner.atu_configs_mut().insert_cfg_base_mapping(
-                        extend_config.cfg_base as PciConfigAddress,
+                if rootcomplex_config.ecam_base == 0 {
+                    continue;
+                }
+                #[cfg(ecam_pcie)]
+                {
+                    // use crate::pci::pci_handler::mmio_vpci_direct_handler;
+                    inner.mmio_region_register(
                         rootcomplex_config.ecam_base as usize,
-                    );
-                    inner.atu_configs_mut().insert_cfg_base_mapping(
-                        cfg1_base as PciConfigAddress,
-                        rootcomplex_config.ecam_base as usize,
-                    );
-                    inner.atu_configs_mut().insert_io_base_mapping(
-                        rootcomplex_config.io_base as PciConfigAddress,
+                        rootcomplex_config.ecam_size as usize,
+                        mmio_vpci_handler,
+                        // mmio_vpci_direct_handler,
                         rootcomplex_config.ecam_base as usize,
                     );
                 }
+                #[cfg(dwc_pcie)]
+                {
+                    // Encode domain_id into the arg parameter: arg = ecam_base + domain_id
+                    // Since ecam_base is 4KB aligned, its low 12 bits are 0
+                    // domain_id (0-15) fits in the low bits without interfering
+                    let encoded_arg = rootcomplex_config.ecam_base as usize
+                        + (rootcomplex_config.domain as usize);
+                    inner.mmio_region_register(
+                        rootcomplex_config.ecam_base as usize,
+                        rootcomplex_config.ecam_size as usize,
+                        mmio_vpci_handler_dbi,
+                        encoded_arg,
+                    );
+
+                    let extend_config = platform::ROOT_DWC_ATU_CONFIG
+                        .iter()
+                        .find(|extend_cfg| extend_cfg.ecam_base == rootcomplex_config.ecam_base);
+
+                    if let Some(extend_config) = extend_config {
+                        if extend_config.apb_base != 0 && extend_config.apb_size != 0 {
+                            inner.mmio_region_register(
+                                extend_config.apb_base as usize,
+                                extend_config.apb_size as usize,
+                                mmio_generic_handler,
+                                extend_config.apb_base as usize,
+                            );
+                        }
+
+                        let cfg_size_half = extend_config.cfg_size / 2;
+                        let cfg0_base = extend_config.cfg_base;
+                        if cfg0_base != 0 && cfg_size_half != 0 {
+                            inner.mmio_region_register(
+                                cfg0_base as usize,
+                                cfg_size_half as usize,
+                                mmio_dwc_cfg_handler,
+                                cfg0_base as usize,
+                            );
+                        }
+
+                        let cfg1_base = extend_config.cfg_base + cfg_size_half;
+                        if cfg1_base != 0 && cfg_size_half != 0 {
+                            inner.mmio_region_register(
+                                cfg1_base as usize,
+                                cfg_size_half as usize,
+                                mmio_dwc_cfg_handler,
+                                cfg1_base as usize,
+                            );
+                        }
+
+                        if extend_config.io_cfg_atu_shared != 0 {
+                            inner.mmio_region_register(
+                                rootcomplex_config.io_base as usize,
+                                rootcomplex_config.io_size as usize,
+                                mmio_dwc_io_handler,
+                                rootcomplex_config.io_base as usize,
+                            );
+                        }
+
+                        let mut atu = AtuConfig::default();
+
+                        let dbi_base = extend_config.dbi_base as PciConfigAddress;
+                        let dbi_size = extend_config.dbi_size;
+                        let dbi_region = PciRegionMmio::new(dbi_base, dbi_size);
+                        let dbi_backend = DwcConfigRegionBackend::new(dbi_region);
+                        if let Err(e) = atu.init_limit_hw_value(&dbi_backend) {
+                            warn!("Failed to initialize ATU0 limit defaults: {:?}", e);
+                        }
+
+                        inner
+                            .atu_configs_mut()
+                            .insert_atu(rootcomplex_config.ecam_base as usize, atu);
+                        inner.atu_configs_mut().insert_cfg_base_mapping(
+                            extend_config.cfg_base as PciConfigAddress,
+                            rootcomplex_config.ecam_base as usize,
+                        );
+                        inner.atu_configs_mut().insert_cfg_base_mapping(
+                            cfg1_base as PciConfigAddress,
+                            rootcomplex_config.ecam_base as usize,
+                        );
+                        inner.atu_configs_mut().insert_io_base_mapping(
+                            rootcomplex_config.io_base as PciConfigAddress,
+                            rootcomplex_config.ecam_base as usize,
+                        );
+                    }
+                }
+                #[cfg(loongarch64_pcie)]
+                {
+                    inner.mmio_region_register(
+                        rootcomplex_config.ecam_base as usize,
+                        rootcomplex_config.ecam_size as usize,
+                        mmio_vpci_direct_handler,
+                        rootcomplex_config.ecam_base as usize,
+                    );
+                    emergency_map_regions.push((
+                        rootcomplex_config.ecam_base as usize,
+                        rootcomplex_config.ecam_size as usize,
+                    ));
+                }
+                #[cfg(not(pci))]
+                {
+                    warn!(
+                        "No extend config found for base 0x{:x}",
+                        rootcomplex_config.ecam_base
+                    );
+                }
             }
+
             #[cfg(loongarch64_pcie)]
             {
-                inner.mmio_region_register(
-                    rootcomplex_config.ecam_base as usize,
-                    rootcomplex_config.ecam_size as usize,
-                    mmio_vpci_direct_handler,
-                    rootcomplex_config.ecam_base as usize,
-                );
-                emergency_map_regions.push((
-                    rootcomplex_config.ecam_base as usize,
-                    rootcomplex_config.ecam_size as usize,
-                ));
+                for (base, size) in emergency_map_regions {
+                    let _ = self.page_table_emergency(base, size);
+                }
             }
-            #[cfg(not(pci))]
-            {
-                warn!(
-                    "No extend config found for base 0x{:x}",
-                    rootcomplex_config.ecam_base
-                );
-            }
-        }
-
-        #[cfg(loongarch64_pcie)]
-        {
-            drop(inner);
-            for (base, size) in emergency_map_regions {
-                let _ = self.page_table_emergency(base, size);
-            }
-        }
+        });
     }
 }

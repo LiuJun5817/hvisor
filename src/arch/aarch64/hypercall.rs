@@ -28,13 +28,7 @@ impl<'a> HyperCall<'a> {
         let zone_id = this_zone_id();
         let zone = this_zone();
         // ipa->hpa->hva
-        let hpa = unsafe {
-            zone.read()
-                .gpm()
-                .page_table_query(ivc_info_ipa as _)
-                .unwrap()
-                .0
-        };
+        let hpa = unsafe { zone.gpm().page_table_query(ivc_info_ipa as _).unwrap().0 };
         // hva == hpa
         let ivc_info = unsafe { &mut *(hpa as *mut IvcInfo) };
         let ivc_infos = IVC_INFOS.lock();

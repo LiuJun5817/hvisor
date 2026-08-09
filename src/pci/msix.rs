@@ -32,21 +32,15 @@ pub fn activate_msix() {
     // let data_info = VirtioPCIDataInfo::from_u64(data_req_id);
     // let dev_id = data_info.get_dev_id();
     let zone = this_zone();
-    let zone_lock = zone.read();
-    let bus = zone_lock.vpci_bus();
-    let msix_backend = match bus.get_msix_backend() {
-        Some(x) => x,
-        None => {
-            // warn!("There is no msix backend in this zone's vpci bus!");
-            return;
+    zone.with_vpci_bus(|bus| {
+        let msix_backend = match bus.get_msix_backend() {
+            Some(x) => x,
+            None => return,
+        };
+        for (_, i) in bus.read_devs() {
+            i.try_inject_msix_irq(&msix_backend);
         }
-    };
-    for (_, i) in bus.read_devs() {
-        // if i.get_bdf().requester_id() == dev_id{
-        //     i.try_inject_msix_irq();
-        // }
-        i.try_inject_msix_irq(&msix_backend);
-    }
+    });
 }
 
 #[allow(unreachable_code)]

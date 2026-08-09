@@ -197,7 +197,7 @@ impl Cmdq {
         self.cbaser_list[zone_id] = value;
         let gpa_base = value & 0xffffffffff000;
         unsafe {
-            let _phy_base = match this_zone().read().gpm().page_table_query(gpa_base) {
+            let _phy_base = match this_zone().gpm().page_table_query(gpa_base) {
                 Ok(p) => self.phy_base_list[zone_id] = p.0,
                 _ => {}
             };
@@ -248,8 +248,7 @@ impl Cmdq {
         let code = (value[0] & 0xff) as usize;
         let mut new_cmd = value.clone();
         let binding = this_zone();
-        let zone = binding.read();
-        let cpuset_bitmap = zone.cpu_set().bitmap;
+        let cpuset_bitmap = binding.cpu_set().bitmap;
 
         let vicid_to_icid_checked = |vicid: u64| -> u64 {
             vicid_to_icid(vicid, cpuset_bitmap)
@@ -268,7 +267,7 @@ impl Cmdq {
         let vfunction = (id_32 & 0x07) as u8;
 
         let vbdf = Bdf::new(domain, vbus, vdevice, vfunction);
-        let bdf = match zone.vpci_bus().get(&vbdf) {
+        let bdf = binding.with_vpci_bus(|bus| match bus.get(&vbdf) {
             Some(vdev) => vdev.read().get_bdf(),
             None => Bdf {
                 domain,
@@ -276,7 +275,7 @@ impl Cmdq {
                 device: 0,
                 function: 0,
             },
-        };
+        });
 
         let phys_id_32 = ((bdf.domain as u32) << 16)
             | ((bdf.bus as u32) << 8)
@@ -309,14 +308,8 @@ impl Cmdq {
                 new_cmd[0] = cmd0_tmp;
 
                 let itt_base = value[2] & 0x000fffffffffff00; // the lowest 8 bits are zeros
-                let phys_itt_base = unsafe {
-                    this_zone()
-                        .read()
-                        .gpm()
-                        .page_table_query(itt_base as _)
-                        .unwrap()
-                        .0
-                };
+                let phys_itt_base =
+                    unsafe { this_zone().gpm().page_table_query(itt_base as _).unwrap().0 };
                 new_cmd[2] &= !0x000fffffffffff00u64;
                 new_cmd[2] |= phys_itt_base as u64;
                 debug!(

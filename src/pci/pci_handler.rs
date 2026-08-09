@@ -244,13 +244,13 @@ fn collect_vf_device_copies(
 
     {
         let zone = this_zone();
-        let guard = zone.read();
-        let vbus = guard.vpci_bus();
-        for dev in vbus.devs_ref().values() {
-            if dev.get_bdf() == vf_host_bdf {
-                devices.push(dev.clone());
+        zone.with_vpci_bus(|vbus| {
+            for dev in vbus.devs_ref().values() {
+                if dev.get_bdf() == vf_host_bdf {
+                    devices.push(dev.clone());
+                }
             }
-        }
+        });
     }
 
     if let Some(dev) = GLOBAL_PCIE_LIST.lock().get(&vf_host_bdf).cloned() {
@@ -332,9 +332,7 @@ fn sync_sriov_vf_bar_state(
             let is_dev_belong_to_zone = {
                 let base = vf_dev.read().get_base();
                 let zone = this_zone();
-                let mut guard = zone.write();
-                let vbus = guard.vpci_bus_mut();
-                vbus.get_device_by_base(base).is_some()
+                zone.with_vpci_bus(|vbus| vbus.get_device_by_base(base).is_some())
             };
 
             // let vf_id = vf_dev
@@ -510,11 +508,13 @@ fn handle_cap_access(
                         }
                         if _is_msg_data {
                             let zone = this_zone();
-                            let guard = zone.read();
-                            let vbus = guard.vpci_bus();
-                            if let Some(domain_msi_info) = vbus.domain_msi_info().get(&_domain_id) {
-                                let hw_value =
-                                    (value as u32).wrapping_add(domain_msi_info.hwirq_bit);
+                            let hwirq_bit = zone.with_vpci_bus(|vbus| {
+                                vbus.domain_msi_info()
+                                    .get(&_domain_id)
+                                    .map(|info| info.hwirq_bit)
+                            });
+                            if let Some(hwirq_bit) = hwirq_bit {
+                                let hw_value = (value as u32).wrapping_add(hwirq_bit);
                                 dev.write_hw(offset, size, hw_value as usize)?;
                             } else {
                                 dev.write_hw(offset, size, value)?;
@@ -541,10 +541,12 @@ fn handle_cap_access(
                         if _is_msg_data {
                             let hw_value = dev.read_hw(offset, size)?;
                             let zone = this_zone();
-                            let guard = zone.read();
-                            let vbus = guard.vpci_bus();
-                            if let Some(domain_msi_info) = vbus.domain_msi_info().get(&_domain_id) {
-                                let hwirq_bit = domain_msi_info.hwirq_bit;
+                            let hwirq_bit = zone.with_vpci_bus(|vbus| {
+                                vbus.domain_msi_info()
+                                    .get(&_domain_id)
+                                    .map(|info| info.hwirq_bit)
+                            });
+                            if let Some(hwirq_bit) = hwirq_bit {
                                 let hw_vec = hw_value as u32;
                                 let virq_bit = if hw_vec >= hwirq_bit {
                                     hw_vec - hwirq_bit
@@ -765,18 +767,16 @@ fn handle_endpoint_access(
                                     };
 
                                 let zone = this_zone();
-                                let mut guard = zone.write();
-
                                 if is_msix_bar {
-                                    guard.mmio_region_remove(old_vaddr as GuestPhysAddr);
-                                    guard.mmio_region_register(
+                                    zone.mmio_region_remove(old_vaddr as GuestPhysAddr);
+                                    zone.mmio_region_register(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         bar_size as usize,
                                         mmio_msix_table_handler,
                                         paddr as usize,
                                     );
                                 } else {
-                                    let gpm = guard.gpm_mut();
+                                    let mut gpm = zone.gpm_mut();
                                     let _ = gpm
                                         .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
                                     gpm.insert(MemoryRegion::new_with_offset_mapper(
@@ -786,7 +786,6 @@ fn handle_endpoint_access(
                                         MemFlags::READ | MemFlags::WRITE,
                                     ))?;
                                 }
-                                drop(guard);
                                 #[cfg(target_arch = "aarch64")]
                                 unsafe {
                                     core::arch::asm!("isb");
@@ -895,13 +894,11 @@ fn handle_endpoint_access(
                                     };
 
                                 let zone = this_zone();
-                                let mut guard = zone.write();
-
                                 if is_msix_bar {
                                     // Remove old MSIX handler if it exists
-                                    guard.mmio_region_remove(old_vaddr as GuestPhysAddr);
+                                    zone.mmio_region_remove(old_vaddr as GuestPhysAddr);
                                     // Register new MSIX handler at new address
-                                    guard.mmio_region_register(
+                                    zone.mmio_region_register(
                                         new_vaddr as GuestPhysAddr,
                                         bar_size as usize,
                                         mmio_msix_table_handler,
@@ -909,7 +906,7 @@ fn handle_endpoint_access(
                                     );
                                 } else {
                                     // Delete old gpm mapping if it exists
-                                    let gpm = guard.gpm_mut();
+                                    let mut gpm = zone.gpm_mut();
                                     let _ = gpm
                                         .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
                                     // Insert new gpm mapping at new address
@@ -920,7 +917,6 @@ fn handle_endpoint_access(
                                         MemFlags::READ | MemFlags::WRITE,
                                     ))?;
                                 }
-                                drop(guard);
                                 /* after update gpm, mem barrier is needed
                                  */
                                 #[cfg(target_arch = "aarch64")]
@@ -1051,8 +1047,7 @@ fn handle_endpoint_access(
                                     };
 
                                 let zone = this_zone();
-                                let mut guard = zone.write();
-                                let gpm = guard.gpm_mut();
+                                let mut gpm = zone.gpm_mut();
 
                                 let _ =
                                     gpm.delete(old_vaddr.try_into().unwrap(), rom_size as usize);
@@ -1062,7 +1057,6 @@ fn handle_endpoint_access(
                                     rom_size as _,
                                     MemFlags::READ | MemFlags::WRITE,
                                 ))?;
-                                drop(guard);
                                 /* after update gpm, mem barrier is needed
                                  */
                                 #[cfg(target_arch = "aarch64")]
@@ -1245,18 +1239,16 @@ fn handle_pci_bridge_access(
                                     };
 
                                 let zone = this_zone();
-                                let mut guard = zone.write();
-
                                 if is_msix_bar {
-                                    guard.mmio_region_remove(old_vaddr as GuestPhysAddr);
-                                    guard.mmio_region_register(
+                                    zone.mmio_region_remove(old_vaddr as GuestPhysAddr);
+                                    zone.mmio_region_register(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         bar_size as usize,
                                         mmio_msix_table_handler,
                                         paddr as usize,
                                     );
                                 } else {
-                                    let gpm = guard.gpm_mut();
+                                    let mut gpm = zone.gpm_mut();
                                     let _ = gpm
                                         .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
                                     gpm.insert(MemoryRegion::new_with_offset_mapper(
@@ -1266,7 +1258,6 @@ fn handle_pci_bridge_access(
                                         MemFlags::READ | MemFlags::WRITE,
                                     ))?;
                                 }
-                                drop(guard);
                                 #[cfg(target_arch = "aarch64")]
                                 unsafe {
                                     core::arch::asm!("isb");
@@ -1355,13 +1346,11 @@ fn handle_pci_bridge_access(
                                     };
 
                                 let zone = this_zone();
-                                let mut guard = zone.write();
-
                                 if is_msix_bar {
                                     // Remove old MSIX handler if it exists
-                                    guard.mmio_region_remove(old_vaddr as GuestPhysAddr);
+                                    zone.mmio_region_remove(old_vaddr as GuestPhysAddr);
                                     // Register new MSIX handler at new address
-                                    guard.mmio_region_register(
+                                    zone.mmio_region_register(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         bar_size as usize,
                                         mmio_msix_table_handler,
@@ -1369,7 +1358,7 @@ fn handle_pci_bridge_access(
                                     );
                                 } else {
                                     // Delete old gpm mapping if it exists
-                                    let gpm = guard.gpm_mut();
+                                    let mut gpm = zone.gpm_mut();
                                     let _ = gpm
                                         .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
                                     // Insert new gpm mapping at new address
@@ -1380,7 +1369,6 @@ fn handle_pci_bridge_access(
                                         MemFlags::READ | MemFlags::WRITE,
                                     ))?;
                                 }
-                                drop(guard);
                                 /* after update gpm, mem barrier is needed
                                  */
                                 #[cfg(target_arch = "aarch64")]
@@ -1506,8 +1494,7 @@ fn handle_pci_bridge_access(
                                     };
 
                                 let zone = this_zone();
-                                let mut guard = zone.write();
-                                let gpm = guard.gpm_mut();
+                                let mut gpm = zone.gpm_mut();
 
                                 let _ =
                                     gpm.delete(old_vaddr.try_into().unwrap(), rom_size as usize);
@@ -1517,7 +1504,6 @@ fn handle_pci_bridge_access(
                                     rom_size as _,
                                     MemFlags::READ | MemFlags::WRITE,
                                 ))?;
-                                drop(guard);
                                 /* after update gpm, mem barrier is needed
                                  */
                                 #[cfg(target_arch = "aarch64")]
@@ -1768,11 +1754,8 @@ pub fn mmio_vpci_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
     let offset = (mmio.address & 0xfff) as PciConfigAddress;
     let base = mmio.address as PciConfigAddress - offset + _base as PciConfigAddress;
 
-    let dev: Option<ArcRwLockVirtualPciConfigSpace> = {
-        let guard = zone.read();
-        let vbus = guard.vpci_bus();
-        vbus.get_device_by_base(base)
-    };
+    let dev: Option<ArcRwLockVirtualPciConfigSpace> =
+        zone.with_vpci_bus(|vbus| vbus.get_device_by_base(base));
 
     let is_root = is_this_root_zone();
 
@@ -1789,19 +1772,17 @@ pub fn mmio_vpci_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
 pub fn mmio_dwc_io_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
     {
         let zone = this_zone();
-        let guard = zone.read();
-
-        let atu_config = guard
-            .atu_configs()
-            .get_atu_by_io_base(_base as PciConfigAddress)
-            .and_then(|atu| {
-                guard
-                    .atu_configs()
-                    .get_ecam_by_io_base(_base as PciConfigAddress)
-                    .map(|ecam| (*atu, ecam))
-            });
-
-        drop(guard);
+        let atu_config = zone.with_inner(|inner| {
+            inner
+                .atu_configs()
+                .get_atu_by_io_base(_base as PciConfigAddress)
+                .and_then(|atu| {
+                    inner
+                        .atu_configs()
+                        .get_ecam_by_io_base(_base as PciConfigAddress)
+                        .map(|ecam| (*atu, ecam))
+                })
+        });
 
         if let Some((atu, ecam_base)) = atu_config {
             use crate::platform;
@@ -1830,19 +1811,17 @@ pub fn mmio_dwc_io_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
 pub fn mmio_dwc_cfg_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
     // info!("mmio_dwc_cfg_handler {:#x}", mmio.address + _base);
     let zone = this_zone();
-    let guard = zone.read();
-
-    let atu_config = guard
-        .atu_configs()
-        .get_atu_by_cfg_base(_base as PciConfigAddress)
-        .and_then(|atu| {
-            guard
-                .atu_configs()
-                .get_ecam_by_cfg_base(_base as PciConfigAddress)
-                .map(|ecam| (*atu, ecam))
-        });
-
-    drop(guard);
+    let atu_config = zone.with_inner(|inner| {
+        inner
+            .atu_configs()
+            .get_atu_by_cfg_base(_base as PciConfigAddress)
+            .and_then(|atu| {
+                inner
+                    .atu_configs()
+                    .get_ecam_by_cfg_base(_base as PciConfigAddress)
+                    .map(|ecam| (*atu, ecam))
+            })
+    });
 
     if let Some((atu, ecam_base)) = atu_config {
         // Get dbi_base from platform config (usually dbi_base == ecam_base)
@@ -1862,9 +1841,7 @@ pub fn mmio_dwc_cfg_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
             let target_device = ((pci_target >> 19) & 0x1f) as u8;
             let target_function = ((pci_target >> 16) & 0x7) as u8;
 
-            let mapped_target = {
-                let zone_guard = zone.read();
-                let vbus = zone_guard.vpci_bus();
+            let mapped_target = zone.with_vpci_bus(|vbus| {
                 vbus.devs_ref().values().find_map(|dev| {
                     let vbdf = dev.get_vbdf();
                     if vbdf.bus() == target_bus
@@ -1876,7 +1853,7 @@ pub fn mmio_dwc_cfg_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
                         None
                     }
                 })
-            };
+            });
 
             let mut hw_pci_target = pci_target;
             let mut atu_type = atu.atu_type();
@@ -1912,28 +1889,20 @@ pub fn mmio_dwc_cfg_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
 
         let base = mmio.address as PciConfigAddress - offset + atu.pci_target();
 
-        let dev: Option<ArcRwLockVirtualPciConfigSpace> = {
-            let mut guard = zone.write();
-            let vbus = guard.vpci_bus_mut();
-            if let Some(dev) = vbus.get_device_by_base(base) {
-                is_dev_belong_to_zone = true;
-                Some(dev)
-            } else {
-                drop(guard);
-                // Clone Arc first while holding GLOBAL_PCIE_LIST lock, then release it
-                // This avoids holding multiple locks simultaneously
-                let dev_clone = {
-                    let global_pcie_list = GLOBAL_PCIE_LIST.lock();
-                    global_pcie_list
-                        .values()
-                        .find(|dev| {
-                            let dev_guard = dev.read();
-                            dev_guard.get_base() == base
-                        })
-                        .cloned()
-                };
-                dev_clone
-            }
+        let zone_dev = zone.with_vpci_bus(|vbus| vbus.get_device_by_base(base));
+        let dev: Option<ArcRwLockVirtualPciConfigSpace> = if let Some(dev) = zone_dev {
+            is_dev_belong_to_zone = true;
+            Some(dev)
+        } else {
+            // Clone Arc while holding GLOBAL_PCIE_LIST, after releasing the zone payload lock.
+            let global_pcie_list = GLOBAL_PCIE_LIST.lock();
+            global_pcie_list
+                .values()
+                .find(|dev| {
+                    let dev_guard = dev.read();
+                    dev_guard.get_base() == base
+                })
+                .cloned()
         };
 
         let dev = match dev {
@@ -1986,33 +1955,32 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
                 match mmio.address {
                     PCIE_MSI_ADDR_LO | PCIE_MSI_ADDR_HI => {
                         let zone = this_zone();
-                        let mut guard = zone.write();
-                        let vbus = guard.vpci_bus_mut();
-
-                        if vbus.domain_msi_info().get(&domain_id).is_none() {
-                            vbus.add_msi_count_for_domain(domain_id, 1, 0);
-                        }
-
-                        if let Some(domain_msi_info) =
-                            vbus.domain_msi_info_mut().get_mut(&domain_id)
-                        {
-                            if mmio.is_write {
-                                let vm_doorbell = domain_msi_info.get_vm_doorbell();
-                                let new_val = if mmio.address == PCIE_MSI_ADDR_LO {
-                                    (vm_doorbell & 0xffffffff00000000) | (mmio.value as u64)
-                                } else {
-                                    (vm_doorbell & 0xffffffff) | ((mmio.value as u64) << 32)
-                                };
-                                domain_msi_info.set_vm_doorbell(new_val);
-                            } else {
-                                let vm_doorbell = domain_msi_info.get_vm_doorbell();
-                                mmio.value = if mmio.address == PCIE_MSI_ADDR_LO {
-                                    (vm_doorbell & 0xffffffff) as usize
-                                } else {
-                                    ((vm_doorbell >> 32) & 0xffffffff) as usize
-                                };
+                        zone.with_vpci_bus_mut(|vbus| {
+                            if vbus.domain_msi_info().get(&domain_id).is_none() {
+                                vbus.add_msi_count_for_domain(domain_id, 1, 0);
                             }
-                        }
+
+                            if let Some(domain_msi_info) =
+                                vbus.domain_msi_info_mut().get_mut(&domain_id)
+                            {
+                                if mmio.is_write {
+                                    let vm_doorbell = domain_msi_info.get_vm_doorbell();
+                                    let new_val = if mmio.address == PCIE_MSI_ADDR_LO {
+                                        (vm_doorbell & 0xffffffff00000000) | (mmio.value as u64)
+                                    } else {
+                                        (vm_doorbell & 0xffffffff) | ((mmio.value as u64) << 32)
+                                    };
+                                    domain_msi_info.set_vm_doorbell(new_val);
+                                } else {
+                                    let vm_doorbell = domain_msi_info.get_vm_doorbell();
+                                    mmio.value = if mmio.address == PCIE_MSI_ADDR_LO {
+                                        (vm_doorbell & 0xffffffff) as usize
+                                    } else {
+                                        ((vm_doorbell >> 32) & 0xffffffff) as usize
+                                    };
+                                }
+                            }
+                        });
 
                         return Ok(());
                     }
@@ -2029,15 +1997,21 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
             crate::pci::pci_config::hvisor_pci_init(&root_config.pci_config[..num_pci_bus])?;
 
             let zone = crate::zone::root_zone();
-            let mut inner = zone.write();
-            inner.virtual_pci_mmio_init_delay(&root_config.pci_config, num_pci_bus);
-            inner.guest_pci_init_delay(
-                0,
-                &root_config.alloc_pci_devs,
-                root_config.num_pci_devs,
-                &root_config.pci_config,
-                num_pci_bus,
-            )?;
+            let gpm_root = zone.gpm().root_paddr();
+            let iommu_pt_addr = zone.iommu_pt().map(|pt| pt.root_paddr()).unwrap_or(0);
+            let pci_init_result = zone.with_inner_mut(|inner| {
+                inner.virtual_pci_mmio_init_delay(&root_config.pci_config, num_pci_bus);
+                inner.guest_pci_init_delay(
+                    0,
+                    &root_config.alloc_pci_devs,
+                    root_config.num_pci_devs,
+                    &root_config.pci_config,
+                    num_pci_bus,
+                    gpm_root,
+                    iommu_pt_addr,
+                )
+            });
+            pci_init_result?;
 
             #[cfg(dwc_msi)]
             {
@@ -2089,122 +2063,126 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
          */
         if mmio.address >= atu_base && mmio.address < atu_base + ATU_REGION_SIZE / 2 {
             let zone = this_zone();
-            let mut guard = zone.write();
             let atu_offset = mmio.address - atu_base;
 
             // warn!("set atu{} register {:#X} value {:#X}", io_atu_index, atu_offset, mmio.value);
 
-            let atu = guard
-                .atu_configs_mut()
-                .get_atu_by_ecam_mut(ecam_base)
-                .unwrap();
+            zone.with_inner_mut(|inner| {
+                let atu = inner
+                    .atu_configs_mut()
+                    .get_atu_by_ecam_mut(ecam_base)
+                    .unwrap();
 
-            // info!("atu config write {:#?}", atu);
+                // info!("atu config write {:#?}", atu);
 
-            if mmio.is_write {
-                if mmio.size == 4 {
-                    match atu_offset {
-                        PCIE_ATU_UNR_REGION_CTRL1 => {
-                            // info!("set atu{} region ctrl1 value {:#X}", io_atu_index, mmio.value);
-                            atu.set_atu_type(AtuType::from_u8((mmio.value & 0xff) as u8));
+                if mmio.is_write {
+                    if mmio.size == 4 {
+                        match atu_offset {
+                            PCIE_ATU_UNR_REGION_CTRL1 => {
+                                // info!("set atu{} region ctrl1 value {:#X}", io_atu_index, mmio.value);
+                                atu.set_atu_type(AtuType::from_u8((mmio.value & 0xff) as u8));
+                            }
+                            PCIE_ATU_UNR_REGION_CTRL2 => {
+                                // Enable bit is written here, but we just track it
+                                // The actual enable is handled by the driver
+                            }
+                            PCIE_ATU_UNR_LOWER_BASE => {
+                                // info!("set atu{} lower base value {:#X}", io_atu_index, mmio.value);
+                                atu.set_cpu_base(
+                                    (atu.cpu_base() & !0xffffffff)
+                                        | (mmio.value as PciConfigAddress),
+                                );
+                            }
+                            PCIE_ATU_UNR_UPPER_BASE => {
+                                // info!("set atu{} upper base value {:#X}", io_atu_index, mmio.value);
+                                atu.set_cpu_base(
+                                    (atu.cpu_base() & 0xffffffff)
+                                        | ((mmio.value as PciConfigAddress) << 32),
+                                );
+                            }
+                            PCIE_ATU_UNR_LIMIT => {
+                                // info!("set atu{} limit value {:#X}", io_atu_index, mmio.value);
+                                atu.set_cpu_limit(
+                                    (atu.cpu_limit() & !0xffffffff)
+                                        | (mmio.value as PciConfigAddress),
+                                );
+                            }
+                            PCIE_ATU_UNR_UPPER_LIMIT => {
+                                // Update the upper 32 bits of cpu_limit
+                                atu.set_cpu_limit(
+                                    (atu.cpu_limit() & 0xffffffff)
+                                        | ((mmio.value as PciConfigAddress) << 32),
+                                );
+                            }
+                            PCIE_ATU_UNR_LOWER_TARGET => {
+                                // info!("set atu{} lower target value {:#X}", io_atu_index, mmio.value);
+                                atu.set_pci_target(
+                                    (atu.pci_target() & !0xffffffff)
+                                        | (mmio.value as PciConfigAddress),
+                                );
+                            }
+                            PCIE_ATU_UNR_UPPER_TARGET => {
+                                // info!("set atu{} upper target value {:#X}", io_atu_index, mmio.value);
+                                atu.set_pci_target(
+                                    (atu.pci_target() & 0xffffffff)
+                                        | ((mmio.value as PciConfigAddress) << 32),
+                                );
+                            }
+                            _ => {
+                                warn!(
+                                    "invalid atu{} write {:#x} + {:#x}",
+                                    io_atu_index, atu_offset, mmio.size
+                                );
+                            }
                         }
-                        PCIE_ATU_UNR_REGION_CTRL2 => {
-                            // Enable bit is written here, but we just track it
-                            // The actual enable is handled by the driver
-                        }
-                        PCIE_ATU_UNR_LOWER_BASE => {
-                            // info!("set atu{} lower base value {:#X}", io_atu_index, mmio.value);
-                            atu.set_cpu_base(
-                                (atu.cpu_base() & !0xffffffff) | (mmio.value as PciConfigAddress),
-                            );
-                        }
-                        PCIE_ATU_UNR_UPPER_BASE => {
-                            // info!("set atu{} upper base value {:#X}", io_atu_index, mmio.value);
-                            atu.set_cpu_base(
-                                (atu.cpu_base() & 0xffffffff)
-                                    | ((mmio.value as PciConfigAddress) << 32),
-                            );
-                        }
-                        PCIE_ATU_UNR_LIMIT => {
-                            // info!("set atu{} limit value {:#X}", io_atu_index, mmio.value);
-                            atu.set_cpu_limit(
-                                (atu.cpu_limit() & !0xffffffff) | (mmio.value as PciConfigAddress),
-                            );
-                        }
-                        PCIE_ATU_UNR_UPPER_LIMIT => {
-                            // Update the upper 32 bits of cpu_limit
-                            atu.set_cpu_limit(
-                                (atu.cpu_limit() & 0xffffffff)
-                                    | ((mmio.value as PciConfigAddress) << 32),
-                            );
-                        }
-                        PCIE_ATU_UNR_LOWER_TARGET => {
-                            // info!("set atu{} lower target value {:#X}", io_atu_index, mmio.value);
-                            atu.set_pci_target(
-                                (atu.pci_target() & !0xffffffff) | (mmio.value as PciConfigAddress),
-                            );
-                        }
-                        PCIE_ATU_UNR_UPPER_TARGET => {
-                            // info!("set atu{} upper target value {:#X}", io_atu_index, mmio.value);
-                            atu.set_pci_target(
-                                (atu.pci_target() & 0xffffffff)
-                                    | ((mmio.value as PciConfigAddress) << 32),
-                            );
-                        }
-                        _ => {
-                            warn!(
-                                "invalid atu{} write {:#x} + {:#x}",
-                                io_atu_index, atu_offset, mmio.size
-                            );
-                        }
+                    } else {
+                        warn!("invalid atu{} read size {:#x}", io_atu_index, mmio.size);
                     }
                 } else {
-                    warn!("invalid atu{} read size {:#x}", io_atu_index, mmio.size);
-                }
-            } else {
-                // Read from virtual ATU
-                // warn!("read atu{} {:#x}", io_atu_index, atu_offset);
-                match atu_offset {
-                    PCIE_ATU_UNR_REGION_CTRL1 => {
-                        mmio.value = atu.atu_type() as usize;
-                    }
-                    PCIE_ATU_UNR_REGION_CTRL2 => {
-                        mmio.value = ATU_ENABLE_BIT as usize;
-                    }
-                    PCIE_ATU_UNR_LOWER_BASE => {
-                        mmio.value = (atu.cpu_base() & 0xffffffff) as usize;
-                    }
-                    PCIE_ATU_UNR_UPPER_BASE => {
-                        mmio.value = ((atu.cpu_base() >> 32) & 0xffffffff) as usize;
-                    }
-                    PCIE_ATU_UNR_LIMIT => {
-                        let limit_value = (atu.cpu_limit() & 0xffffffff) as usize;
-                        mmio.value = if limit_value == 0 {
-                            atu.limit_hw_value() as usize
-                        } else {
-                            limit_value
-                        };
-                    }
-                    PCIE_ATU_UNR_UPPER_LIMIT => {
-                        let upper_limit = ((atu.cpu_limit() >> 32) & 0xffffffff) as usize;
-                        mmio.value = if upper_limit == 0xffffffff {
-                            atu.upper_limit_hw_value() as usize
-                        } else {
-                            upper_limit
-                        };
-                    }
-                    PCIE_ATU_UNR_LOWER_TARGET => {
-                        mmio.value = (atu.pci_target() & 0xffffffff) as usize;
-                    }
-                    PCIE_ATU_UNR_UPPER_TARGET => {
-                        mmio.value = ((atu.pci_target() >> 32) & 0xffffffff) as usize;
-                    }
-                    _ => {
-                        warn!("invalid atu{} read {:#x}", io_atu_index, atu_offset);
-                        mmio_perform_access(_base, mmio);
+                    // Read from virtual ATU
+                    // warn!("read atu{} {:#x}", io_atu_index, atu_offset);
+                    match atu_offset {
+                        PCIE_ATU_UNR_REGION_CTRL1 => {
+                            mmio.value = atu.atu_type() as usize;
+                        }
+                        PCIE_ATU_UNR_REGION_CTRL2 => {
+                            mmio.value = ATU_ENABLE_BIT as usize;
+                        }
+                        PCIE_ATU_UNR_LOWER_BASE => {
+                            mmio.value = (atu.cpu_base() & 0xffffffff) as usize;
+                        }
+                        PCIE_ATU_UNR_UPPER_BASE => {
+                            mmio.value = ((atu.cpu_base() >> 32) & 0xffffffff) as usize;
+                        }
+                        PCIE_ATU_UNR_LIMIT => {
+                            let limit_value = (atu.cpu_limit() & 0xffffffff) as usize;
+                            mmio.value = if limit_value == 0 {
+                                atu.limit_hw_value() as usize
+                            } else {
+                                limit_value
+                            };
+                        }
+                        PCIE_ATU_UNR_UPPER_LIMIT => {
+                            let upper_limit = ((atu.cpu_limit() >> 32) & 0xffffffff) as usize;
+                            mmio.value = if upper_limit == 0xffffffff {
+                                atu.upper_limit_hw_value() as usize
+                            } else {
+                                upper_limit
+                            };
+                        }
+                        PCIE_ATU_UNR_LOWER_TARGET => {
+                            mmio.value = (atu.pci_target() & 0xffffffff) as usize;
+                        }
+                        PCIE_ATU_UNR_UPPER_TARGET => {
+                            mmio.value = ((atu.pci_target() >> 32) & 0xffffffff) as usize;
+                        }
+                        _ => {
+                            warn!("invalid atu{} read {:#x}", io_atu_index, atu_offset);
+                            mmio_perform_access(_base, mmio);
+                        }
                     }
                 }
-            }
+            });
         } else if mmio.address > ATU_BASE {
             mmio_perform_access(ecam_base, mmio);
         } else if mmio.address >= BIT_LENTH
@@ -2222,108 +2200,42 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
                 let dbi_offset = mmio.address;
                 let zone = this_zone();
 
-                let mut guard = zone.write();
-                let vbus = guard.vpci_bus_mut();
+                zone.with_vpci_bus_mut(|vbus| {
+                    if let Some(domain_msi_info) = vbus.domain_msi_info_mut().get_mut(&domain_id) {
+                        match dbi_offset {
+                            PCIE_MSI_ADDR_LO => {
+                                if mmio.is_write {
+                                    // VM writes low 32 bits of doorbell address
+                                    let new_doorbell = (domain_msi_info.get_vm_doorbell()
+                                        & 0xffffffff00000000)
+                                        | (mmio.value as u64);
+                                    domain_msi_info.set_vm_doorbell(new_doorbell);
 
-                if let Some(domain_msi_info) = vbus.domain_msi_info_mut().get_mut(&domain_id) {
-                    match dbi_offset {
-                        PCIE_MSI_ADDR_LO => {
-                            if mmio.is_write {
-                                // VM writes low 32 bits of doorbell address
-                                let new_doorbell = (domain_msi_info.get_vm_doorbell()
-                                    & 0xffffffff00000000)
-                                    | (mmio.value as u64);
-                                domain_msi_info.set_vm_doorbell(new_doorbell);
-
-                                // Check if hardware doorbell matches hvisor's allocation from DW_MSI_DOMAINS
-                                // Read current hardware ADDR_LO and ADDR_HI to get full doorbell address
-                                let mut hw_hi_mmio = MMIOAccess {
-                                    address: PCIE_MSI_ADDR_HI,
-                                    value: 0,
-                                    size: 4,
-                                    is_write: false,
-                                };
-                                // After VM writes LO, hardware still has old LO value
-                                // We'll use the new LO from VM write and existing HI from hardware
-                                mmio_perform_access(ecam_base, &mut hw_hi_mmio);
-                                let hw_doorbell =
-                                    ((hw_hi_mmio.value as u64) << 32) | (mmio.value as u64);
-
-                                // Get the authoritative doorbell from DW_MSI_DOMAINS
-                                // Actually vm set the doorbell only when this board doesn't support arch MSI
-                                let hw_paddr =
-                                    crate::pci::dwc_msi::get_domain_doorbell_paddr(domain_id);
-
-                                // If hardware doorbell doesn't match hvisor's allocation, sync it
-                                if hw_doorbell != hw_paddr && hw_paddr != 0 {
-                                    let hw_paddr_lo = (hw_paddr & 0xffffffff) as u32;
-                                    let hw_paddr_hi = ((hw_paddr >> 32) & 0xffffffff) as u32;
-
-                                    // Write hvisor's doorbell LO
-                                    let mut hw_lo_write = MMIOAccess {
-                                        address: PCIE_MSI_ADDR_LO,
-                                        value: hw_paddr_lo as usize,
-                                        size: 4,
-                                        is_write: true,
-                                    };
-                                    mmio_perform_access(ecam_base, &mut hw_lo_write);
-
-                                    // Write hvisor's doorbell HI (only if needed)
-                                    if hw_paddr_hi != (hw_hi_mmio.value as u32) {
-                                        let mut hw_hi_write = MMIOAccess {
-                                            address: PCIE_MSI_ADDR_HI,
-                                            value: hw_paddr_hi as usize,
-                                            size: 4,
-                                            is_write: true,
-                                        };
-                                        mmio_perform_access(ecam_base, &mut hw_hi_write);
-                                    }
-                                }
-                            } else {
-                                // Return the low 32 bits of VM doorbell
-                                mmio.value =
-                                    (domain_msi_info.get_vm_doorbell() & 0xffffffff) as usize;
-                            }
-                        }
-                        PCIE_MSI_ADDR_HI => {
-                            if mmio.is_write {
-                                // VM writes high 32 bits of doorbell address
-                                let new_doorbell = (domain_msi_info.get_vm_doorbell() & 0xffffffff)
-                                    | ((mmio.value as u64) << 32);
-                                domain_msi_info.set_vm_doorbell(new_doorbell);
-
-                                // Check if hardware doorbell matches hvisor's allocation from DW_MSI_DOMAINS
-                                // Read current hardware ADDR_LO and ADDR_HI to get full doorbell address
-                                let mut hw_lo_mmio = MMIOAccess {
-                                    address: PCIE_MSI_ADDR_LO,
-                                    value: 0,
-                                    size: 4,
-                                    is_write: false,
-                                };
-                                mmio_perform_access(ecam_base, &mut hw_lo_mmio);
-                                let hw_doorbell =
-                                    ((mmio.value as u64) << 32) | (hw_lo_mmio.value as u64);
-
-                                // Get the authoritative doorbell from DW_MSI_DOMAINS
-                                let hw_paddr =
-                                    crate::pci::dwc_msi::get_domain_doorbell_paddr(domain_id);
-
-                                // If hardware doorbell doesn't match hvisor's allocation, sync it
-                                if hw_doorbell != hw_paddr && hw_paddr != 0 {
-                                    let hw_paddr_lo = (hw_paddr & 0xffffffff) as u32;
-                                    let hw_paddr_hi = ((hw_paddr >> 32) & 0xffffffff) as u32;
-
-                                    // Write hvisor's doorbell HI
-                                    let mut hw_hi_write = MMIOAccess {
+                                    // Check if hardware doorbell matches hvisor's allocation from DW_MSI_DOMAINS
+                                    // Read current hardware ADDR_LO and ADDR_HI to get full doorbell address
+                                    let mut hw_hi_mmio = MMIOAccess {
                                         address: PCIE_MSI_ADDR_HI,
-                                        value: hw_paddr_hi as usize,
+                                        value: 0,
                                         size: 4,
-                                        is_write: true,
+                                        is_write: false,
                                     };
-                                    mmio_perform_access(ecam_base, &mut hw_hi_write);
+                                    // After VM writes LO, hardware still has old LO value
+                                    // We'll use the new LO from VM write and existing HI from hardware
+                                    mmio_perform_access(ecam_base, &mut hw_hi_mmio);
+                                    let hw_doorbell =
+                                        ((hw_hi_mmio.value as u64) << 32) | (mmio.value as u64);
 
-                                    // Write hvisor's doorbell LO (only if needed)
-                                    if hw_paddr_lo != (hw_lo_mmio.value as u32) {
+                                    // Get the authoritative doorbell from DW_MSI_DOMAINS
+                                    // Actually vm set the doorbell only when this board doesn't support arch MSI
+                                    let hw_paddr =
+                                        crate::pci::dwc_msi::get_domain_doorbell_paddr(domain_id);
+
+                                    // If hardware doorbell doesn't match hvisor's allocation, sync it
+                                    if hw_doorbell != hw_paddr && hw_paddr != 0 {
+                                        let hw_paddr_lo = (hw_paddr & 0xffffffff) as u32;
+                                        let hw_paddr_hi = ((hw_paddr >> 32) & 0xffffffff) as u32;
+
+                                        // Write hvisor's doorbell LO
                                         let mut hw_lo_write = MMIOAccess {
                                             address: PCIE_MSI_ADDR_LO,
                                             value: hw_paddr_lo as usize,
@@ -2331,42 +2243,134 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
                                             is_write: true,
                                         };
                                         mmio_perform_access(ecam_base, &mut hw_lo_write);
+
+                                        // Write hvisor's doorbell HI (only if needed)
+                                        if hw_paddr_hi != (hw_hi_mmio.value as u32) {
+                                            let mut hw_hi_write = MMIOAccess {
+                                                address: PCIE_MSI_ADDR_HI,
+                                                value: hw_paddr_hi as usize,
+                                                size: 4,
+                                                is_write: true,
+                                            };
+                                            mmio_perform_access(ecam_base, &mut hw_hi_write);
+                                        }
                                     }
-                                }
-                            } else {
-                                // Return the high 32 bits of VM doorbell
-                                mmio.value = ((domain_msi_info.get_vm_doorbell() >> 32)
-                                    & 0xffffffff)
-                                    as usize;
-                            }
-                        }
-                        PCIE_MSI_INTR0_ENABLE | PCIE_MSI_INTR0_MASK | PCIE_MSI_INTR0_STATUS => {
-                            // All three registers use the same bit shifting and masking logic
-                            let hwirq_bit = domain_msi_info.hwirq_bit;
-                            let vm_mask = domain_msi_info.get_msi_mask();
-
-                            if mmio.is_write {
-                                // VM writes from virqbit 0-based perspective
-                                // Convert to hardware perspective by left-shifting by hwirq_bit
-                                let hw_value_vm =
-                                    (mmio.value as u32 & vm_mask).wrapping_shl(hwirq_bit);
-
-                                if dbi_offset == PCIE_MSI_INTR0_STATUS {
-                                    // Status register: write 1 to clear semantics
-                                    // Mask first to ensure VM can only clear its own bits
-                                    // No need to read hardware value - just write the mapped bits
-                                    // Hardware will clear only the bits we write as 1
-                                    // Other domains' pending interrupts remain unaffected
-                                    let mut hw_mmio_write = MMIOAccess {
-                                        address: mmio.address,
-                                        value: hw_value_vm as usize,
-                                        size: 4,
-                                        is_write: true,
-                                    };
-                                    mmio_perform_access(ecam_base, &mut hw_mmio_write);
                                 } else {
-                                    // For ENABLE/MASK registers: need to preserve other domain's bits
-                                    // Read current hardware value
+                                    // Return the low 32 bits of VM doorbell
+                                    mmio.value =
+                                        (domain_msi_info.get_vm_doorbell() & 0xffffffff) as usize;
+                                }
+                            }
+                            PCIE_MSI_ADDR_HI => {
+                                if mmio.is_write {
+                                    // VM writes high 32 bits of doorbell address
+                                    let new_doorbell = (domain_msi_info.get_vm_doorbell()
+                                        & 0xffffffff)
+                                        | ((mmio.value as u64) << 32);
+                                    domain_msi_info.set_vm_doorbell(new_doorbell);
+
+                                    // Check if hardware doorbell matches hvisor's allocation from DW_MSI_DOMAINS
+                                    // Read current hardware ADDR_LO and ADDR_HI to get full doorbell address
+                                    let mut hw_lo_mmio = MMIOAccess {
+                                        address: PCIE_MSI_ADDR_LO,
+                                        value: 0,
+                                        size: 4,
+                                        is_write: false,
+                                    };
+                                    mmio_perform_access(ecam_base, &mut hw_lo_mmio);
+                                    let hw_doorbell =
+                                        ((mmio.value as u64) << 32) | (hw_lo_mmio.value as u64);
+
+                                    // Get the authoritative doorbell from DW_MSI_DOMAINS
+                                    let hw_paddr =
+                                        crate::pci::dwc_msi::get_domain_doorbell_paddr(domain_id);
+
+                                    // If hardware doorbell doesn't match hvisor's allocation, sync it
+                                    if hw_doorbell != hw_paddr && hw_paddr != 0 {
+                                        let hw_paddr_lo = (hw_paddr & 0xffffffff) as u32;
+                                        let hw_paddr_hi = ((hw_paddr >> 32) & 0xffffffff) as u32;
+
+                                        // Write hvisor's doorbell HI
+                                        let mut hw_hi_write = MMIOAccess {
+                                            address: PCIE_MSI_ADDR_HI,
+                                            value: hw_paddr_hi as usize,
+                                            size: 4,
+                                            is_write: true,
+                                        };
+                                        mmio_perform_access(ecam_base, &mut hw_hi_write);
+
+                                        // Write hvisor's doorbell LO (only if needed)
+                                        if hw_paddr_lo != (hw_lo_mmio.value as u32) {
+                                            let mut hw_lo_write = MMIOAccess {
+                                                address: PCIE_MSI_ADDR_LO,
+                                                value: hw_paddr_lo as usize,
+                                                size: 4,
+                                                is_write: true,
+                                            };
+                                            mmio_perform_access(ecam_base, &mut hw_lo_write);
+                                        }
+                                    }
+                                } else {
+                                    // Return the high 32 bits of VM doorbell
+                                    mmio.value = ((domain_msi_info.get_vm_doorbell() >> 32)
+                                        & 0xffffffff)
+                                        as usize;
+                                }
+                            }
+                            PCIE_MSI_INTR0_ENABLE | PCIE_MSI_INTR0_MASK | PCIE_MSI_INTR0_STATUS => {
+                                // All three registers use the same bit shifting and masking logic
+                                let hwirq_bit = domain_msi_info.hwirq_bit;
+                                let vm_mask = domain_msi_info.get_msi_mask();
+
+                                if mmio.is_write {
+                                    // VM writes from virqbit 0-based perspective
+                                    // Convert to hardware perspective by left-shifting by hwirq_bit
+                                    let hw_value_vm =
+                                        (mmio.value as u32 & vm_mask).wrapping_shl(hwirq_bit);
+
+                                    if dbi_offset == PCIE_MSI_INTR0_STATUS {
+                                        // Status register: write 1 to clear semantics
+                                        // Mask first to ensure VM can only clear its own bits
+                                        // No need to read hardware value - just write the mapped bits
+                                        // Hardware will clear only the bits we write as 1
+                                        // Other domains' pending interrupts remain unaffected
+                                        let mut hw_mmio_write = MMIOAccess {
+                                            address: mmio.address,
+                                            value: hw_value_vm as usize,
+                                            size: 4,
+                                            is_write: true,
+                                        };
+                                        mmio_perform_access(ecam_base, &mut hw_mmio_write);
+                                    } else {
+                                        // For ENABLE/MASK registers: need to preserve other domain's bits
+                                        // Read current hardware value
+                                        let mut hw_mmio = MMIOAccess {
+                                            address: mmio.address,
+                                            value: 0,
+                                            size: 4,
+                                            is_write: false,
+                                        };
+                                        mmio_perform_access(ecam_base, &mut hw_mmio);
+                                        let hw_value = hw_mmio.value as u32;
+
+                                        // Create mask for this domain's MSI bits
+                                        let domain_mask = vm_mask.wrapping_shl(hwirq_bit);
+
+                                        // Update hardware value: clear domain bits, then set new ones
+                                        let new_hw_value =
+                                            (hw_value & !domain_mask) | (hw_value_vm & domain_mask);
+
+                                        let mut hw_mmio_write = MMIOAccess {
+                                            address: mmio.address,
+                                            value: new_hw_value as usize,
+                                            size: 4,
+                                            is_write: true,
+                                        };
+                                        mmio_perform_access(ecam_base, &mut hw_mmio_write);
+                                    }
+                                } else {
+                                    // Read and convert from hardware perspective to VM perspective
+                                    // Read hardware value
                                     let mut hw_mmio = MMIOAccess {
                                         address: mmio.address,
                                         value: 0,
@@ -2376,47 +2380,21 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
                                     mmio_perform_access(ecam_base, &mut hw_mmio);
                                     let hw_value = hw_mmio.value as u32;
 
-                                    // Create mask for this domain's MSI bits
-                                    let domain_mask = vm_mask.wrapping_shl(hwirq_bit);
-
-                                    // Update hardware value: clear domain bits, then set new ones
-                                    let new_hw_value =
-                                        (hw_value & !domain_mask) | (hw_value_vm & domain_mask);
-
-                                    let mut hw_mmio_write = MMIOAccess {
-                                        address: mmio.address,
-                                        value: new_hw_value as usize,
-                                        size: 4,
-                                        is_write: true,
-                                    };
-                                    mmio_perform_access(ecam_base, &mut hw_mmio_write);
+                                    // Right shift to get VM perspective and mask
+                                    let vm_value = hw_value.wrapping_shr(hwirq_bit) & vm_mask;
+                                    mmio.value = vm_value as usize;
                                 }
-                            } else {
-                                // Read and convert from hardware perspective to VM perspective
-                                // Read hardware value
-                                let mut hw_mmio = MMIOAccess {
-                                    address: mmio.address,
-                                    value: 0,
-                                    size: 4,
-                                    is_write: false,
-                                };
-                                mmio_perform_access(ecam_base, &mut hw_mmio);
-                                let hw_value = hw_mmio.value as u32;
-
-                                // Right shift to get VM perspective and mask
-                                let vm_value = hw_value.wrapping_shr(hwirq_bit) & vm_mask;
-                                mmio.value = vm_value as usize;
+                            }
+                            _ => {
+                                // Other DBI registers
+                                mmio_perform_access(ecam_base, mmio);
                             }
                         }
-                        _ => {
-                            // Other DBI registers
-                            mmio_perform_access(ecam_base, mmio);
-                        }
+                    } else {
+                        warn!("No MSI domain info found for domain {}", domain_id);
+                        mmio_perform_access(ecam_base, mmio);
                     }
-                } else {
-                    warn!("No MSI domain info found for domain {}", domain_id);
-                    mmio_perform_access(ecam_base, mmio);
-                }
+                });
             }
 
             #[cfg(not(dwc_msi))]
@@ -2432,28 +2410,20 @@ pub fn mmio_vpci_handler_dbi(mmio: &mut MMIOAccess, _base: usize) -> HvResult {
 
             let base = mmio.address as PciConfigAddress - offset + ecam_base as PciConfigAddress;
 
-            let dev: Option<ArcRwLockVirtualPciConfigSpace> = {
-                let mut guard = zone.write();
-                let vbus = guard.vpci_bus_mut();
-                if let Some(dev) = vbus.get_device_by_base(base) {
-                    is_dev_belong_to_zone = true;
-                    Some(dev)
-                } else {
-                    drop(guard);
-                    // Clone Arc first while holding GLOBAL_PCIE_LIST lock, then release it
-                    // This avoids holding multiple locks simultaneously
-                    let dev_clone = {
-                        let global_pcie_list = GLOBAL_PCIE_LIST.lock();
-                        global_pcie_list
-                            .values()
-                            .find(|dev| {
-                                let dev_guard = dev.read();
-                                dev_guard.get_base() == base
-                            })
-                            .cloned()
-                    };
-                    dev_clone
-                }
+            let zone_dev = zone.with_vpci_bus(|vbus| vbus.get_device_by_base(base));
+            let dev: Option<ArcRwLockVirtualPciConfigSpace> = if let Some(dev) = zone_dev {
+                is_dev_belong_to_zone = true;
+                Some(dev)
+            } else {
+                // Clone Arc while holding GLOBAL_PCIE_LIST, after releasing the zone payload lock.
+                let global_pcie_list = GLOBAL_PCIE_LIST.lock();
+                global_pcie_list
+                    .values()
+                    .find(|dev| {
+                        let dev_guard = dev.read();
+                        dev_guard.get_base() == base
+                    })
+                    .cloned()
             };
 
             let dev = match dev {
@@ -2507,21 +2477,20 @@ pub fn mmio_vpci_direct_handler(mmio: &mut MMIOAccess, _base: usize) -> HvResult
     let base = mmio.address as PciConfigAddress - offset + _base as PciConfigAddress;
     let mut is_dev_belong_to_zone = false;
 
-    let dev: Option<ArcRwLockVirtualPciConfigSpace> = {
-        let mut guard = zone.write();
-        let vbus = guard.vpci_bus_mut();
-        if let Some(dev) = vbus.get_device_by_base(base) {
-            is_dev_belong_to_zone = true;
-            Some(dev)
-        } else {
-            drop(guard);
-            let global_pcie_list = GLOBAL_PCIE_LIST.lock();
-            global_pcie_list
-                .values()
-                .find(|dev| dev.read().get_base() == base)
-                .cloned()
-        }
-    };
+    let dev: Option<ArcRwLockVirtualPciConfigSpace> =
+        match zone.with_vpci_bus(|vbus| vbus.get_device_by_base(base)) {
+            Some(dev) => {
+                is_dev_belong_to_zone = true;
+                Some(dev)
+            }
+            None => {
+                let global_pcie_list = GLOBAL_PCIE_LIST.lock();
+                global_pcie_list
+                    .values()
+                    .find(|dev| dev.read().get_base() == base)
+                    .cloned()
+            }
+        };
 
     let dev = match dev {
         Some(dev) => dev,
@@ -2545,11 +2514,8 @@ pub fn mmio_msix_table_handler(mmio: &mut MMIOAccess, base: usize) -> HvResult {
     let base_aligned = (base as u64) & !0xf;
 
     // Find the device matching this BAR's physical address and get domain_id from BDF
-    let (device_info, _domain_id) = {
-        let zone = this_zone();
-        let guard = zone.read();
-        let vbus = guard.vpci_bus();
-
+    let zone = this_zone();
+    let (device_info, _domain_id) = zone.with_vpci_bus(|vbus| {
         // Find the device whose MSIX BAR paddr matches the handler base
         let mut result = None;
         let mut domain_id = 0xFF;
@@ -2574,7 +2540,7 @@ pub fn mmio_msix_table_handler(mmio: &mut MMIOAccess, base: usize) -> HvResult {
             );
         }
         (result, domain_id)
-    };
+    });
 
     // Check if this access is within the MSIX table range
     if let Some((dev, msix_offset, entry_count)) = device_info {
@@ -2642,13 +2608,13 @@ pub fn mmio_msix_table_handler(mmio: &mut MMIOAccess, base: usize) -> HvResult {
                         {
                             if _domain_id != 0xFF {
                                 let zone = this_zone();
-                                let guard = zone.read();
-                                let vbus = guard.vpci_bus();
-                                if let Some(domain_msi_info) =
-                                    vbus.domain_msi_info().get(&_domain_id)
-                                {
+                                let hwirq_bit = zone.with_vpci_bus(|vbus| {
+                                    vbus.domain_msi_info()
+                                        .get(&_domain_id)
+                                        .map(|info| info.hwirq_bit)
+                                });
+                                if let Some(hwirq_bit) = hwirq_bit {
                                     let virq_bit = mmio.value as u32;
-                                    let hwirq_bit = domain_msi_info.hwirq_bit;
                                     let hw_value = virq_bit.wrapping_add(hwirq_bit);
                                     mmio.value = hw_value as usize;
                                 }
@@ -2694,12 +2660,12 @@ pub fn mmio_msix_table_handler(mmio: &mut MMIOAccess, base: usize) -> HvResult {
                         {
                             if _domain_id != 0xFF {
                                 let zone = this_zone();
-                                let guard = zone.read();
-                                let vbus = guard.vpci_bus();
-                                if let Some(domain_msi_info) =
-                                    vbus.domain_msi_info().get(&_domain_id)
-                                {
-                                    let hwirq_bit = domain_msi_info.hwirq_bit;
+                                let hwirq_bit = zone.with_vpci_bus(|vbus| {
+                                    vbus.domain_msi_info()
+                                        .get(&_domain_id)
+                                        .map(|info| info.hwirq_bit)
+                                });
+                                if let Some(hwirq_bit) = hwirq_bit {
                                     let hw_vec = hw_value as u32;
                                     let virq_bit = if hw_vec >= hwirq_bit {
                                         hw_vec - hwirq_bit

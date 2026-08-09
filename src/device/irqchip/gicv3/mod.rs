@@ -503,8 +503,7 @@ pub fn percpu_init() {
 impl Zone {
     pub fn arch_irqchip_reset(&self) {
         let gicd_base = host_gicd_base();
-        let zone = self.read();
-        for (idx, &mask) in zone.irq_bitmap().iter().enumerate() {
+        for (idx, &mask) in self.irq_bitmap().iter().enumerate() {
             if idx == 0 {
                 continue;
             }

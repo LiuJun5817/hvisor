@@ -142,14 +142,12 @@ impl PciMem {
             match self.handler {
                 Some(handler) => {
                     let zone = this_zone();
-                    let mut guard = zone.write();
-                    guard.mmio_region_register(
+                    zone.mmio_region_register(
                         value as usize,
                         self.size as usize,
                         handler,
                         value as usize,
                     );
-                    drop(guard);
                     self.clear_size_read();
                     self.set_virtual_value(value as u64);
                 }

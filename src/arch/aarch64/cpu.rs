@@ -269,10 +269,5 @@ pub fn store_cpu_pointer_to_reg(_pointer: usize) {
 }
 
 pub fn get_target_cpu(_irq: usize, zone_id: usize) -> usize {
-    find_zone(zone_id)
-        .unwrap()
-        .read()
-        .cpu_set()
-        .first_cpu()
-        .unwrap()
+    find_zone(zone_id).unwrap().cpu_set().first_cpu().unwrap()
 }

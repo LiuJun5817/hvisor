@@ -141,18 +141,18 @@ pub const HANDLER: VirtioRngHandler = VirtioRngHandler;
 
 pub fn rng_mmio_handler(mmio: &mut MMIOAccess, base: usize) -> HvResult {
     let zone = this_zone();
-    let zone_lock = zone.read();
-    let bus = zone_lock.vpci_bus();
-    let (mut dev, mut bar) = (None, 0);
-    for (_, i) in bus.read_devs() {
-        if let Some(res) = i.is_my_bar_addr(base) {
-            dev = Some(i.clone());
-            bar = res;
-            break;
+    zone.with_vpci_bus(|bus| {
+        let (mut dev, mut bar) = (None, 0);
+        for (_, i) in bus.read_devs() {
+            if let Some(res) = i.is_my_bar_addr(base) {
+                dev = Some(i.clone());
+                bar = res;
+                break;
+            }
         }
-    }
-    if let Some(found_dev) = dev {
-        return found_dev.bar_mmio_distribute(bar, mmio);
-    }
-    Ok(())
+        match dev {
+            Some(found_dev) => found_dev.bar_mmio_distribute(bar, mmio),
+            None => Ok(()),
+        }
+    })
 }

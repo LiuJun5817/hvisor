@@ -41,7 +41,6 @@ impl Zone {
     // trap all Guest OS accesses to the GIC Distributor registers.
     pub fn vgicv2_mmio_init(&mut self, arch: &HvArchZoneConfig) {
         let zone_id = self.id();
-        let mut inner = self.write();
         match arch.gic_config {
             GicConfig::Gicv3(_) => {
                 panic!("GICv3 is not supported in this version of hvisor");
@@ -51,7 +50,7 @@ impl Zone {
                     panic!("vgicv2_mmio_init: gicd_base is null");
                 }
                 info!("Initializing GICv2 MMIO regions for zone {}", zone_id);
-                inner.mmio_region_register(
+                self.mmio_region_register(
                     gicv2_config.gicd_base,
                     gicv2_config.gicd_size,
                     vgicv2_dist_handler,
@@ -64,7 +63,6 @@ impl Zone {
     // remap the GIC CPU interface register address space to point to the GIC virtual CPU interface registers.
     pub fn vgicv2_remap_init(&mut self, arch: &HvArchZoneConfig) {
         let zone_id = self.id();
-        let mut inner = self.write();
         match arch.gic_config {
             GicConfig::Gicv3(_) => {
                 panic!("GICv3 is not supported in this version of hvisor");
@@ -85,8 +83,7 @@ impl Zone {
                     zone_id
                 );
                 // map gicv memory region to gicc memory region.
-                inner
-                    .gpm_mut()
+                self.gpm_mut()
                     .insert(MemoryRegion::new_with_offset_mapper(
                         gicv2_config.gicc_base,
                         gicv2_config.gicv_base,
@@ -101,23 +98,24 @@ impl Zone {
     // store the interrupt number in the irq_bitmap.
     pub fn irq_bitmap_init(&mut self, irqs_bitmap: &[BitmapWord]) {
         let zone_id = self.id();
-        let mut inner = self.write();
-        // Enable each cpu's sgi and ppi access permission
-        inner.irq_bitmap_mut()[0] = 0xffff_ffff;
+        self.with_inner_mut(|inner| {
+            // Enable each cpu's sgi and ppi access permission
+            inner.irq_bitmap_mut()[0] = 0xffff_ffff;
 
-        for i in 0..irqs_bitmap.len() {
-            let word = irqs_bitmap[i];
+            for i in 0..irqs_bitmap.len() {
+                let word = irqs_bitmap[i];
 
-            for j in 0..CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD {
-                if ((word >> j) & 1) == 1 {
-                    let irq_id = (i * CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD + j) as u32;
-                    assert!(irq_id < get_max_int_num() as u32);
-                    let irq_index = irq_id / 32;
-                    let irq_bit = irq_id % 32;
-                    inner.irq_bitmap_mut()[irq_index as usize] |= 1 << irq_bit;
+                for j in 0..CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD {
+                    if ((word >> j) & 1) == 1 {
+                        let irq_id = (i * CONFIG_INTERRUPTS_BITMAP_BITS_PER_WORD + j) as u32;
+                        assert!(irq_id < get_max_int_num() as u32);
+                        let irq_index = irq_id / 32;
+                        let irq_bit = irq_id % 32;
+                        inner.irq_bitmap_mut()[irq_index as usize] |= 1 << irq_bit;
+                    }
                 }
             }
-        }
+        });
 
         for (index, &word) in inner.irq_bitmap().iter().enumerate() {
             for bit_position in 0..32 {
@@ -146,7 +144,6 @@ fn restrict_bitmask_access(
     gicd_base: usize,
 ) -> HvResult {
     let zone = this_zone();
-    let zone_r = zone.read();
     let mut access_mask: usize = 0;
     /*
      * In order to avoid division, the number of bits per irq is limited
@@ -161,7 +158,7 @@ fn restrict_bitmask_access(
     trace!("mmio.size: {:#x}", mmio.size);
     trace!("mmio.value: {:#x}", mmio.value);
     for irq in 0..irqs_per_reg {
-        if zone_r.irq_in_zone((first_irq + irq) as _) {
+        if zone.irq_in_zone((first_irq + irq) as _) {
             trace!("restrict visit irq {}", first_irq + irq);
             access_mask |= irq_bits << (irq * bits_per_irq);
         }

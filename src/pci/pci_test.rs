@@ -57,53 +57,56 @@ pub fn pcie_test() {
 
 pub fn pcie_guest_init() {
     let zone = this_zone();
-    let mut zone_w = zone.write();
-    let vbus = zone_w.vpci_bus_mut();
+    zone.with_vpci_bus_mut(|vbus| {
+        let mut guard = GLOBAL_PCIE_LIST_TEST.lock();
 
-    let mut guard = GLOBAL_PCIE_LIST_TEST.lock();
-
-    let vbdf = Bdf::from_str("0000:00:00.0").unwrap();
-    let bdf = Bdf::from_str("0000:00:00.0").unwrap();
-    let base = 0x4010000000; // Base address for test
-    let backend = EndpointHeader::new_with_region(PciConfigMmio::new(base, CONFIG_LENTH));
-    let dev =
-        VirtualPciConfigSpace::host_bridge(bdf, base, Arc::new(backend), (0x6u8, 0u8, 0u8, 0x0));
-    vbus.insert(vbdf, dev);
-
-    let vbdf = Bdf::from_str("0000:00:01.0").unwrap();
-    let bdf = Bdf::from_str("0000:00:01.0").unwrap();
-    if let Some(mut dev) = guard.remove(&bdf) {
-        // let _ = dev.write_hw(0x20, 4, 0xffffffff);
-        // let value1 = dev.read_hw(0x20, 4).unwrap();
-        // let _ = dev.write_hw(0x24, 4, 0xffffffff);
-        // let value2 = dev.read_hw(0x24, 4).unwrap();
-        // info!("{:#?} bar64 {:x}, {:x}", bdf, (value1 as u64), ((value2 as u64) << 32u64));
-        dev.set_vbdf(vbdf);
+        let vbdf = Bdf::from_str("0000:00:00.0").unwrap();
+        let bdf = Bdf::from_str("0000:00:00.0").unwrap();
+        let base = 0x4010000000; // Base address for test
+        let backend = EndpointHeader::new_with_region(PciConfigMmio::new(base, CONFIG_LENTH));
+        let dev = VirtualPciConfigSpace::host_bridge(
+            bdf,
+            base,
+            Arc::new(backend),
+            (0x6u8, 0u8, 0u8, 0x0),
+        );
         vbus.insert(vbdf, dev);
-    } else {
-        warn!("can not find dev");
-    }
 
-    let vbdf = Bdf::from_str("0000:00:02.0").unwrap();
-    let bdf = Bdf::from_str("0000:00:02.0").unwrap();
-    if let Some(mut dev) = guard.remove(&bdf) {
-        dev.set_vbdf(vbdf);
-        vbus.insert(vbdf, dev);
-    } else {
-        warn!("can not find dev");
-    }
+        let vbdf = Bdf::from_str("0000:00:01.0").unwrap();
+        let bdf = Bdf::from_str("0000:00:01.0").unwrap();
+        if let Some(mut dev) = guard.remove(&bdf) {
+            // let _ = dev.write_hw(0x20, 4, 0xffffffff);
+            // let value1 = dev.read_hw(0x20, 4).unwrap();
+            // let _ = dev.write_hw(0x24, 4, 0xffffffff);
+            // let value2 = dev.read_hw(0x24, 4).unwrap();
+            // info!("{:#?} bar64 {:x}, {:x}", bdf, (value1 as u64), ((value2 as u64) << 32u64));
+            dev.set_vbdf(vbdf);
+            vbus.insert(vbdf, dev);
+        } else {
+            warn!("can not find dev");
+        }
 
-    let vbdf = Bdf::from_str("0000:00:03.0").unwrap();
-    let bdf = Bdf::from_str("0000:00:03.0").unwrap();
-    if let Some(mut dev) = guard.remove(&bdf) {
-        dev.set_vbdf(vbdf);
-        vbus.insert(vbdf, dev);
-    } else {
-        warn!("can not find dev");
-    }
+        let vbdf = Bdf::from_str("0000:00:02.0").unwrap();
+        let bdf = Bdf::from_str("0000:00:02.0").unwrap();
+        if let Some(mut dev) = guard.remove(&bdf) {
+            dev.set_vbdf(vbdf);
+            vbus.insert(vbdf, dev);
+        } else {
+            warn!("can not find dev");
+        }
 
-    info!("{:#?}", vbus);
-    info!("pcie guest init done");
+        let vbdf = Bdf::from_str("0000:00:03.0").unwrap();
+        let bdf = Bdf::from_str("0000:00:03.0").unwrap();
+        if let Some(mut dev) = guard.remove(&bdf) {
+            dev.set_vbdf(vbdf);
+            vbus.insert(vbdf, dev);
+        } else {
+            warn!("can not find dev");
+        }
+
+        info!("{:#?}", vbus);
+        info!("pcie guest init done");
+    });
 }
 
 pub fn ecam_pcie_guest_test() {
@@ -111,16 +114,14 @@ pub fn ecam_pcie_guest_test() {
     let bdf = Bdf::from_str("0000:00:01.0").unwrap();
     // Get base from VirtualPciConfigSpace and add offset
     // Use a block scope to ensure the read lock is released before calling mmio_vpci_direct_handler
-    let address = {
-        let zone_r = zone.read();
-        let vbus = zone_r.vpci_bus();
+    let address = zone.with_vpci_bus(|vbus| {
         if let Some(vdev) = vbus.get(&bdf) {
             vdev.read().get_base()
         } else {
             warn!("can not find dev {:#?} for test", bdf);
             0
         }
-    };
+    });
     let value = 0;
     let test_address = address + 0x14;
 
@@ -241,16 +242,14 @@ pub fn ecam_pcie_guest_test64() {
     let bdf = Bdf::from_str("0000:00:02.0").unwrap();
     // Get base from VirtualPciConfigSpace and add offset
     // Use a block scope to ensure the read lock is released before calling mmio_vpci_direct_handler
-    let address = {
-        let zone_r = zone.read();
-        let vbus = zone_r.vpci_bus();
+    let address = zone.with_vpci_bus(|vbus| {
         if let Some(vdev) = vbus.get(&bdf) {
             vdev.read().get_base()
         } else {
             warn!("can not find dev {:#?} for test", bdf);
             0
         }
-    };
+    });
 
     if address == 0 {
         warn!("Failed to get device base address");
