@@ -30,6 +30,9 @@ pub use frame::Frame;
 pub use mm::{MemoryRegion, MemorySet, PARKING_INST_PAGE};
 pub use mmio::*;
 
+#[cfg(target_arch = "aarch64")]
+pub use verihymem::VMemorySet;
+
 use crate::arch::paging;
 
 pub const PAGE_SIZE: usize = paging::PageSize::Size4K as usize;

@@ -7,25 +7,25 @@
 use crate::arch::paging::{PageSize, PagingError, PagingResult};
 use crate::error::HvResult;
 use crate::memory::{
-    addr::{GuestPhysAddr, HostPhysAddr},
+    addr::{align_down, align_up, virt_to_phys, GuestPhysAddr, HostPhysAddr},
     mapper::Mapper,
     mm::MemoryRegion as HvisorMemoryRegion,
     MemFlags, PhysAddr, PAGE_SIZE,
 };
+use alloc::boxed::Box;
 use core::fmt::{Debug, Formatter, Result as FmtResult};
 use spin::Once;
 use verified_hv_mem::{
     address::{
         addr::{PAddr, VAddr},
-        frame::{FrameSize, MemAttr},
+        frame::MemAttr,
         region::MemoryRegion,
     },
     bitmap_allocator::bitmap_impl::BitAlloc1M,
     global_allocator::GbAlloc,
-    hardware::{spec::MmuVmToken, MmuHardware},
     hv_mem::{protocol::BudgetProtocol, HvMem},
-    memory_set::{MemorySet as VeriHyMemMemorySetOps, VecMemorySet},
-    page_table::{ExPageTable, PageTable},
+    memory_set::VecMemorySet,
+    page_table::ExPageTable,
 };
 use vstd::prelude::Tracked;
 
@@ -152,12 +152,13 @@ pub type VeriHyMemMemorySet = VecMemorySet<VeriHyMemPageTable, BitAlloc1M, Hviso
 pub type HvisorHvMem =
     HvMem<VeriHyMemPageTable, VeriHyMemMemorySet, BitAlloc1M, BudgetProtocol, HvisorHardware>;
 
-static HV_MEM: Once<HvisorHvMem> = Once::new();
+static HV_MEM: Once<Box<HvisorHvMem>> = Once::new();
 
 /// Return hvisor's single global verified memory manager.
 pub fn hv_mem() -> &'static HvisorHvMem {
     HV_MEM
         .get()
+        .map(|hv_mem| hv_mem.as_ref())
         .expect("HvisorHvMem is not initialized before use")
 }
 
@@ -171,53 +172,50 @@ pub fn init_hv_mem(base: PhysAddr, page_count: usize, pt_level: usize) {
     let allocator = GbAlloc::default(PAddr(base));
     allocator.init(page_count, Tracked::assume_new());
     let pt_constants = hvisor_pt_constants(pt_level);
-    HV_MEM.call_once(|| HvisorHvMem::new(allocator, pt_constants));
+    HV_MEM.call_once(|| Box::new(HvisorHvMem::new(allocator, pt_constants)));
 }
 
-/// Compatibility wrapper exposing hvisor-style memory-set operations over
-/// VeriHyMem's `VecMemorySet`.
+/// Initialize hvisor's global verified memory manager and physical frame allocator.
+pub fn init() {
+    let mem_pool_start = crate::consts::mem_pool_start();
+    let mem_pool_end = align_down(crate::consts::hv_end());
+    let mem_pool_size = mem_pool_end - mem_pool_start;
+
+    let page_count = align_up(mem_pool_size) / PAGE_SIZE;
+    let pt_level = if crate::arch::aarch64::mm::is_s2_pt_level3() {
+        3
+    } else {
+        4
+    };
+    init_hv_mem(align_up(virt_to_phys(mem_pool_start)), page_count, pt_level);
+
+    info!(
+        "Frame allocator initialization finished: {:#x?}",
+        mem_pool_start..mem_pool_end
+    );
+}
+
+/// Lightweight hvisor handle for one of `HvMem`'s per-zone memory sets.
 ///
-/// The wrapper owns the MMU handle and threads the zone's VM token through
-/// every mapping mutation. Region metadata stays solely in `VecMemorySet`.
+/// The page table and region metadata live in `HvisorHvMem`; this value only
+/// identifies the zone and whether the CPU or IOMMU stage-2 set is addressed.
 pub struct VMemorySet {
-    inner: VeriHyMemMemorySet,
-    mmu: MmuHardware<HvisorHardware>,
-    s2_token: Option<Tracked<MmuVmToken>>,
     zone_id: usize,
     iommu: bool,
 }
 
 impl VMemorySet {
-    pub fn new(pt_level: usize, zone_id: usize, iommu: bool) -> Self {
-        let inner: VeriHyMemMemorySet =
-            VeriHyMemMemorySetOps::new(global_allocator(), hvisor_pt_constants(pt_level));
-        let (mmu, _) = MmuHardware::<HvisorHardware>::new();
-        Self {
-            inner,
-            mmu,
-            s2_token: Some(Tracked::assume_new()),
-            zone_id,
-            iommu,
-        }
-    }
-
-    fn inner(&self) -> &VeriHyMemMemorySet {
-        &self.inner
+    pub const fn new(zone_id: usize, iommu: bool) -> Self {
+        Self { zone_id, iommu }
     }
 
     pub fn root_paddr(&self) -> usize {
-        VeriHyMemMemorySetOps::pt_root(self.inner()).0
-    }
-
-    pub fn for_each_region<F>(&self, mut f: F)
-    where
-        F: FnMut(&HvisorMemoryRegion<GuestPhysAddr>),
-    {
-        for region in &self.inner().regions {
-            let region = from_verihymem_region(region)
-                .expect("VecMemorySet contains an invalid compatibility region");
-            f(&region);
-        }
+        let root = if self.iommu {
+            hv_mem().iommu_pt_root(self.zone_id)
+        } else {
+            hv_mem().pt_root(self.zone_id)
+        };
+        root.expect("HvMem zone is not registered").0
     }
 
     pub fn insert(&mut self, region: HvisorMemoryRegion<GuestPhysAddr>) -> HvResult {
@@ -225,66 +223,22 @@ impl VMemorySet {
             return Ok(());
         }
         let converted = to_verihymem_region(&region)?;
-        if VeriHyMemMemorySetOps::overlaps_vmem(self.inner(), &converted) {
-            return hv_result_err!(EINVAL, "memory region overlaps an existing mapping");
-        }
-        let token = self.s2_token.take().expect("missing VecMemorySet VM token");
-        let zone_id = self.zone_id;
-        let iommu = self.iommu;
-        let new_token = VeriHyMemMemorySetOps::insert(
-            &mut self.inner,
-            global_allocator(),
-            converted,
-            zone_id,
-            &self.mmu,
-            token,
-            iommu,
-        );
-        self.s2_token = Some(new_token);
-        Ok(())
-    }
-
-    pub fn try_insert(&mut self, region: HvisorMemoryRegion<GuestPhysAddr>) -> HvResult {
-        let converted = to_verihymem_region(&region)?;
-        if VeriHyMemMemorySetOps::overlaps_vmem(self.inner(), &converted) {
-            return Ok(());
-        }
-        self.insert(region)
-    }
-
-    fn delete(&mut self, start: GuestPhysAddr, size: usize) -> HvResult {
-        let matches_region = self.inner().regions.iter().any(|region| {
-            region.vstart.0 == start && region.pages.checked_mul(PAGE_SIZE) == Some(size)
-        });
-        if !matches_region {
-            return hv_result_err!(EINVAL, "memory region size does not match");
-        }
-
-        let token = self.s2_token.take().expect("missing VecMemorySet VM token");
-        let zone_id = self.zone_id;
-        let iommu = self.iommu;
-        let new_token = VeriHyMemMemorySetOps::remove(
-            &mut self.inner,
-            global_allocator(),
-            VAddr(start),
-            zone_id,
-            &self.mmu,
-            token,
-            iommu,
-        );
-        self.s2_token = Some(new_token);
-        Ok(())
-    }
-
-    pub fn try_delete(&mut self, start: GuestPhysAddr, size: usize) -> HvResult {
-        let matches_region = self.inner().regions.iter().any(|region| {
-            region.vstart.0 == start && region.pages.checked_mul(PAGE_SIZE) == Some(size)
-        });
-        if matches_region {
-            self.delete(start, size)
+        let result = if self.iommu {
+            hv_mem().insert_iommu_region(self.zone_id, converted)
         } else {
-            Err(hv_err!(ENOMEM))
-        }
+            hv_mem().insert_region(self.zone_id, converted)
+        };
+        result.map_err(|_| hv_err!(EINVAL, "memory region insertion failed"))
+    }
+
+    pub fn delete(&mut self, start: GuestPhysAddr, size: usize) -> HvResult {
+        let region = make_memory_region(start, 0, size, MemFlags::empty());
+        let result = if self.iommu {
+            hv_mem().remove_iommu_region(self.zone_id, region)
+        } else {
+            hv_mem().remove_region(self.zone_id, region)
+        };
+        result.map_err(|_| hv_err!(EINVAL, "memory region removal failed"))
     }
 
     pub unsafe fn activate(&self) {
@@ -295,22 +249,13 @@ impl VMemorySet {
         &self,
         vaddr: GuestPhysAddr,
     ) -> PagingResult<(PhysAddr, MemFlags, PageSize)> {
-        let (vbase, frame) = self
-            .inner()
-            .pt
-            .query(VAddr(vaddr))
-            .map_err(|_| PagingError::NotMapped)?;
-        let page_size = match frame.size {
-            FrameSize::Size4K => PageSize::Size4K,
-            FrameSize::Size2M => PageSize::Size2M,
-            FrameSize::Size1G => PageSize::Size1G,
-            _ => return Err(PagingError::NotMapped),
+        let result = if self.iommu {
+            hv_mem().iommu_query_vaddr(self.zone_id, VAddr(vaddr))
+        } else {
+            hv_mem().query_vaddr(self.zone_id, VAddr(vaddr))
         };
-        Ok((
-            frame.base.0 + (vaddr - vbase.0),
-            attr_to_mem_flags(frame.attr),
-            page_size,
-        ))
+        let (paddr, attr) = result.map_err(|_| PagingError::NotMapped)?;
+        Ok((paddr.0, attr_to_mem_flags(attr), PageSize::Size4K))
     }
 }
 
@@ -319,7 +264,6 @@ impl Debug for VMemorySet {
         f.debug_struct("VMemorySet")
             .field("zone_id", &self.zone_id)
             .field("iommu", &self.iommu)
-            .field("region_count", &self.inner().regions.len())
             .field("page_table_root", &self.root_paddr())
             .finish()
     }

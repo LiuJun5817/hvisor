@@ -777,14 +777,9 @@ fn handle_endpoint_access(
                                     );
                                 } else {
                                     let gpm = guard.gpm_mut();
-                                    if !gpm
-                                        .try_delete(
-                                            old_vaddr.try_into().unwrap(),
-                                            bar_size as usize,
-                                        )
-                                        .is_ok()
-                                    {}
-                                    gpm.try_insert_quiet(MemoryRegion::new_with_offset_mapper(
+                                    let _ = gpm
+                                        .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
+                                    gpm.insert(MemoryRegion::new_with_offset_mapper(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
@@ -915,17 +910,10 @@ fn handle_endpoint_access(
                                 } else {
                                     // Delete old gpm mapping if it exists
                                     let gpm = guard.gpm_mut();
-                                    if !gpm
-                                        .try_delete(
-                                            old_vaddr.try_into().unwrap(),
-                                            bar_size as usize,
-                                        )
-                                        .is_ok()
-                                    {
-                                        // warn!("delete bar {}: can not found 0x{:x}", slot, old_vaddr);
-                                    }
+                                    let _ = gpm
+                                        .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
                                     // Insert new gpm mapping at new address
-                                    gpm.try_insert_quiet(MemoryRegion::new_with_offset_mapper(
+                                    gpm.insert(MemoryRegion::new_with_offset_mapper(
                                         new_vaddr as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
@@ -1066,13 +1054,9 @@ fn handle_endpoint_access(
                                 let mut guard = zone.write();
                                 let gpm = guard.gpm_mut();
 
-                                if !gpm
-                                    .try_delete(old_vaddr.try_into().unwrap(), rom_size as usize)
-                                    .is_ok()
-                                {
-                                    // warn!("delete rom bar: can not found 0x{:x}", old_vaddr);
-                                }
-                                gpm.try_insert_quiet(MemoryRegion::new_with_offset_mapper(
+                                let _ =
+                                    gpm.delete(old_vaddr.try_into().unwrap(), rom_size as usize);
+                                gpm.insert(MemoryRegion::new_with_offset_mapper(
                                     new_vaddr_aligned as GuestPhysAddr,
                                     paddr as HostPhysAddr,
                                     rom_size as _,
@@ -1273,14 +1257,9 @@ fn handle_pci_bridge_access(
                                     );
                                 } else {
                                     let gpm = guard.gpm_mut();
-                                    if !gpm
-                                        .try_delete(
-                                            old_vaddr.try_into().unwrap(),
-                                            bar_size as usize,
-                                        )
-                                        .is_ok()
-                                    {}
-                                    gpm.try_insert_quiet(MemoryRegion::new_with_offset_mapper(
+                                    let _ = gpm
+                                        .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
+                                    gpm.insert(MemoryRegion::new_with_offset_mapper(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
@@ -1391,17 +1370,10 @@ fn handle_pci_bridge_access(
                                 } else {
                                     // Delete old gpm mapping if it exists
                                     let gpm = guard.gpm_mut();
-                                    if !gpm
-                                        .try_delete(
-                                            old_vaddr.try_into().unwrap(),
-                                            bar_size as usize,
-                                        )
-                                        .is_ok()
-                                    {
-                                        // warn!("delete bar {}: can not found 0x{:x}", slot, old_vaddr);
-                                    }
+                                    let _ = gpm
+                                        .delete(old_vaddr.try_into().unwrap(), bar_size as usize);
                                     // Insert new gpm mapping at new address
-                                    gpm.try_insert_quiet(MemoryRegion::new_with_offset_mapper(
+                                    gpm.insert(MemoryRegion::new_with_offset_mapper(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
@@ -1537,13 +1509,9 @@ fn handle_pci_bridge_access(
                                 let mut guard = zone.write();
                                 let gpm = guard.gpm_mut();
 
-                                if !gpm
-                                    .try_delete(old_vaddr.try_into().unwrap(), rom_size as usize)
-                                    .is_ok()
-                                {
-                                    // warn!("delete rom bar: can not found 0x{:x}", old_vaddr);
-                                }
-                                gpm.try_insert_quiet(MemoryRegion::new_with_offset_mapper(
+                                let _ =
+                                    gpm.delete(old_vaddr.try_into().unwrap(), rom_size as usize);
+                                gpm.insert(MemoryRegion::new_with_offset_mapper(
                                     new_vaddr_aligned as GuestPhysAddr,
                                     paddr as HostPhysAddr,
                                     rom_size as _,

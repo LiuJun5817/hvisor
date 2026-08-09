@@ -25,14 +25,20 @@ use crate::pci::{config_accessors::dwc_atu::AtuConfig, PciConfigAddress};
 #[cfg(dwc_pcie)]
 use alloc::collections::btree_map::BTreeMap;
 
+#[cfg(not(target_arch = "aarch64"))]
 use crate::arch::mm::new_s2_memory_set;
+#[cfg(not(target_arch = "aarch64"))]
 use crate::arch::s2pt::Stage2PageTable;
 use crate::config::{HvZoneConfig, CONFIG_NAME_MAXLEN};
 
 use crate::cpu_data::{get_cpu_data, this_zone, CpuSet};
 use crate::error::HvResult;
 use crate::memory::addr::GuestPhysAddr;
-use crate::memory::{MMIOConfig, MMIOHandler, MMIORegion, MemorySet};
+#[cfg(not(target_arch = "aarch64"))]
+use crate::memory::MemorySet;
+#[cfg(target_arch = "aarch64")]
+use crate::memory::VMemorySet;
+use crate::memory::{MMIOConfig, MMIOHandler, MMIORegion};
 use core::panic;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -115,13 +121,18 @@ pub struct Zone {
     inner: RwLock<ZoneInner>,
 }
 
+#[cfg(target_arch = "aarch64")]
+type ZoneMemorySet = VMemorySet;
+#[cfg(not(target_arch = "aarch64"))]
+type ZoneMemorySet = MemorySet<Stage2PageTable>;
+
 pub struct ZoneInner {
     mmio: Vec<MMIOConfig>,
     cpu_num: usize,
     cpu_set: CpuSet,
     irq_bitmap: [u32; 1024 / 32],
-    gpm: MemorySet<Stage2PageTable>,
-    iommu_pt: Option<MemorySet<Stage2PageTable>>,
+    gpm: ZoneMemorySet,
+    iommu_pt: Option<ZoneMemorySet>,
     vpci_bus: VirtualRootComplex,
     #[cfg(dwc_pcie)]
     atu_configs: VirtualAtuConfigs,
@@ -134,7 +145,7 @@ impl Zone {
             name: name.try_into().unwrap(),
             id: zoneid,
             is_err: AtomicBool::new(false),
-            inner: RwLock::new(ZoneInner::new()),
+            inner: RwLock::new(ZoneInner::new(zoneid)),
         }
     }
 
@@ -168,18 +179,32 @@ impl Zone {
 }
 
 impl ZoneInner {
-    pub fn new() -> Self {
+    pub fn new(zone_id: usize) -> Self {
+        #[cfg(target_arch = "aarch64")]
+        let gpm = VMemorySet::new(zone_id, false);
+        #[cfg(not(target_arch = "aarch64"))]
+        let gpm = new_s2_memory_set();
+
+        #[cfg(target_arch = "aarch64")]
+        let iommu_pt = if cfg!(iommu) {
+            Some(VMemorySet::new(zone_id, true))
+        } else {
+            None
+        };
+        #[cfg(not(target_arch = "aarch64"))]
+        let iommu_pt = if cfg!(iommu) {
+            Some(new_s2_memory_set())
+        } else {
+            None
+        };
+
         Self {
-            gpm: new_s2_memory_set(),
+            gpm,
             mmio: Vec::new(),
             cpu_num: 0,
             cpu_set: CpuSet::new(MAX_CPU_NUM as usize, 0),
             irq_bitmap: [0; 1024 / 32],
-            iommu_pt: if cfg!(iommu) {
-                Some(new_s2_memory_set())
-            } else {
-                None
-            },
+            iommu_pt,
             vpci_bus: VirtualRootComplex::new(),
             #[cfg(dwc_pcie)]
             atu_configs: VirtualAtuConfigs::new(),
@@ -284,19 +309,19 @@ impl ZoneInner {
         &mut self.irq_bitmap
     }
 
-    pub fn gpm(&self) -> &MemorySet<Stage2PageTable> {
+    pub fn gpm(&self) -> &ZoneMemorySet {
         &self.gpm
     }
 
-    pub fn gpm_mut(&mut self) -> &mut MemorySet<Stage2PageTable> {
+    pub fn gpm_mut(&mut self) -> &mut ZoneMemorySet {
         &mut self.gpm
     }
 
-    pub fn iommu_pt(&self) -> Option<&MemorySet<Stage2PageTable>> {
+    pub fn iommu_pt(&self) -> Option<&ZoneMemorySet> {
         self.iommu_pt.as_ref()
     }
 
-    pub fn iommu_pt_mut(&mut self) -> Option<&mut MemorySet<Stage2PageTable>> {
+    pub fn iommu_pt_mut(&mut self) -> Option<&mut ZoneMemorySet> {
         self.iommu_pt.as_mut()
     }
 
@@ -752,6 +777,11 @@ pub fn remove_zone(zone_id: usize) {
         .find(|(_, zone)| zone.id() == zone_id)
         .unwrap();
     let removed_zone = zone_list.remove(idx);
+    
+    // Remove the zone from HvMem correspondingly
+    #[cfg(target_arch = "aarch64")]
+    crate::memory::verihymem::hv_mem().remove_zone(zone_id);
+
     assert_eq!(Arc::strong_count(&removed_zone), 1);
 }
 
@@ -790,6 +820,22 @@ pub fn zone_create(config: &HvZoneConfig) -> HvResult<Arc<Zone>> {
         return hv_result_err!(
             EINVAL,
             format!("Failed to create zone: zone_id {} already exists", zone_id)
+        );
+    }
+
+    // Insert the zone into HvMem first to register the zone, so the VMemorySet can be created
+    // and operated with the correct zone_id.
+    #[cfg(target_arch = "aarch64")]
+    if crate::memory::verihymem::hv_mem()
+        .add_zone(zone_id)
+        .is_err()
+    {
+        return hv_result_err!(
+            EINVAL,
+            format!(
+                "Failed to create zone: HvMem zone {} already exists",
+                zone_id
+            )
         );
     }
 

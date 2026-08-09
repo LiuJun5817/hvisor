@@ -125,7 +125,7 @@ fn primary_init_early() {
         option_env!("ARCH").unwrap_or(""),
         option_env!("STATS").unwrap_or("off"),
     );
-    memory::frame::init();
+    memory::verihymem::init();
     memory::frame::test();
 
     arch::stage2_mode_detect();

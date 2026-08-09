@@ -135,7 +135,7 @@ impl Zone {
         Ok(())
     }
 
-    pub fn arch_zone_reset(&mut self, _config: &HvZoneConfig) -> HvResult {
+    pub fn arch_zone_reset(&mut self, config: &HvZoneConfig) -> HvResult {
         // This operation serves as an insurance to ensure that
         //      there is no relevant d-cache line in the cache;
         //      since the VA has the inner-shareable attribute,
@@ -146,19 +146,25 @@ impl Zone {
             let ctr_el0: u64;
             core::arch::asm!("mrs {0}, ctr_el0", out(reg) ctr_el0, options(nostack, preserves_flags));
             let dcache_line_size = (1 << ((ctr_el0 >> 16 & 0xF) as usize)) * 4;
-            let inner = self.read();
-            inner.gpm().for_each_region(|region| {
-                // Invalidate all RAM regions of the guest
-                if !region.flags.contains(MemFlags::IO) { // TODO: need to enrich the types and exercise more precise control
-                    // Calculate the physical start address of the region
-                    let phys_start = region.mapper.map_fn(region.start);
-                    // Map phys_start to hvisor virtual address
+            for region in config.memory_regions() {
+                // Invalidate all RAM regions of the guest.  The authoritative
+                // region metadata now lives in HvMem; the zone configuration
+                // supplies the same RAM ranges for this one-time cache flush.
+                if region.mem_type == MEM_TYPE_RAM {
+                    let phys_start = region.physical_start as usize;
                     let hva_start = phys_to_virt(phys_start);
-                    info!("Invalidate Guest related cache, region.start: {:#x}, region.size: {:#x}, phys_start: {:#x}, hva_start: {:#x}", region.start, region.size, phys_start, hva_start);
-                    // D-cache invalid operation will broadcast to all cores, just do it once. There is no need to do it on each core.
-                    invalidate_dcache_range(hva_start, region.size, dcache_line_size);
+                    info!(
+                        "Invalidate Guest related cache, region.start: {:#x}, region.size: {:#x}, phys_start: {:#x}, hva_start: {:#x}",
+                        region.virtual_start,
+                        region.size,
+                        phys_start,
+                        hva_start
+                    );
+                    // D-cache invalid operation will broadcast to all cores,
+                    // just do it once.
+                    invalidate_dcache_range(hva_start, region.size as usize, dcache_line_size);
                 }
-            });
+            }
         }
         Ok(())
     }

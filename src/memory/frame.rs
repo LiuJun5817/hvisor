@@ -17,13 +17,12 @@
 
 use alloc::vec::Vec;
 
-use super::addr::{align_down, align_up, is_aligned, PhysAddr};
+use super::addr::{is_aligned, PhysAddr};
 use crate::consts::PAGE_SIZE;
 use crate::error::HvResult;
-use crate::memory::addr::virt_to_phys;
 
-use vstd::prelude::Tracked;
 use verified_hv_mem::global_allocator::GbAlloc;
+use vstd::prelude::Tracked;
 
 pub fn gb_allocator() -> &'static GbAlloc {
     crate::memory::verihymem::global_allocator()
@@ -147,30 +146,6 @@ impl Frame {
         assert!(data.len() <= self.size());
         self.as_slice_mut()[..len].copy_from_slice(data);
     }
-}
-
-/// Initialize hvisor's global verified memory manager and physical frame allocator.
-pub fn init() {
-    let mem_pool_start = crate::consts::mem_pool_start();
-    let mem_pool_end = align_down(crate::consts::hv_end());
-    let mem_pool_size = mem_pool_end - mem_pool_start;
-
-    let page_count = align_up(mem_pool_size) / PAGE_SIZE;
-    let pt_level = if crate::arch::aarch64::mm::is_s2_pt_level3() {
-        3
-    } else {
-        4
-    };
-    crate::memory::verihymem::init_hv_mem(
-        align_up(virt_to_phys(mem_pool_start)),
-        page_count,
-        pt_level,
-    );
-
-    info!(
-        "Frame allocator initialization finished: {:#x?}",
-        mem_pool_start..mem_pool_end
-    );
 }
 
 pub fn test() {
