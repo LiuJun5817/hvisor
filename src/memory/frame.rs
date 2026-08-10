@@ -21,7 +21,7 @@ use super::addr::{is_aligned, PhysAddr};
 use crate::consts::PAGE_SIZE;
 use crate::error::HvResult;
 
-use verified_hv_mem::global_allocator::GbAlloc;
+use verified_hv_mem::{address::addr::PAddr, global_allocator::GbAlloc};
 use vstd::prelude::Tracked;
 
 pub fn gb_allocator() -> &'static GbAlloc {
@@ -145,6 +145,18 @@ impl Frame {
         let len = data.len();
         assert!(data.len() <= self.size());
         self.as_slice_mut()[..len].copy_from_slice(data);
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        if self.frame_count > 0 {
+            gb_allocator().dealloc_contiguous(
+                Tracked::assume_new(),
+                PAddr(self.start_paddr),
+                self.frame_count,
+            );
+        }
     }
 }
 

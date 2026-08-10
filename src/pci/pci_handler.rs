@@ -68,6 +68,17 @@ const SRIOV_CTRL_OFFSET: PciConfigAddress = 0x08;
 const SRIOV_NUM_VFS_OFFSET: PciConfigAddress = 0x10;
 const SRIOV_CTRL_VF_ENABLE: u16 = 1 << 0;
 
+fn pci_region_flags() -> MemFlags {
+    #[cfg(target_arch = "aarch64")]
+    {
+        MemFlags::READ | MemFlags::WRITE | MemFlags::IO
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        MemFlags::READ | MemFlags::WRITE
+    }
+}
+
 macro_rules! pci_log {
     ($($arg:tt)*) => {
         // info!($($arg)*);
@@ -783,7 +794,7 @@ fn handle_endpoint_access(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
-                                        MemFlags::READ | MemFlags::WRITE,
+                                        pci_region_flags(),
                                     ))?;
                                 }
                                 #[cfg(target_arch = "aarch64")]
@@ -914,7 +925,7 @@ fn handle_endpoint_access(
                                         new_vaddr as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
-                                        MemFlags::READ | MemFlags::WRITE,
+                                        pci_region_flags(),
                                     ))?;
                                 }
                                 /* after update gpm, mem barrier is needed
@@ -1055,7 +1066,7 @@ fn handle_endpoint_access(
                                     new_vaddr_aligned as GuestPhysAddr,
                                     paddr as HostPhysAddr,
                                     rom_size as _,
-                                    MemFlags::READ | MemFlags::WRITE,
+                                    pci_region_flags(),
                                 ))?;
                                 /* after update gpm, mem barrier is needed
                                  */
@@ -1255,7 +1266,7 @@ fn handle_pci_bridge_access(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
-                                        MemFlags::READ | MemFlags::WRITE,
+                                        pci_region_flags(),
                                     ))?;
                                 }
                                 #[cfg(target_arch = "aarch64")]
@@ -1366,7 +1377,7 @@ fn handle_pci_bridge_access(
                                         new_vaddr_aligned as GuestPhysAddr,
                                         paddr as HostPhysAddr,
                                         bar_size as _,
-                                        MemFlags::READ | MemFlags::WRITE,
+                                        pci_region_flags(),
                                     ))?;
                                 }
                                 /* after update gpm, mem barrier is needed
@@ -1502,7 +1513,7 @@ fn handle_pci_bridge_access(
                                     new_vaddr_aligned as GuestPhysAddr,
                                     paddr as HostPhysAddr,
                                     rom_size as _,
-                                    MemFlags::READ | MemFlags::WRITE,
+                                    pci_region_flags(),
                                 ))?;
                                 /* after update gpm, mem barrier is needed
                                  */

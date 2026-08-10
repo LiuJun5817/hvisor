@@ -15,7 +15,7 @@
 //
 use crate::{
     arch::{s2pt::activate_stage2_page_table, sysreg::write_sysreg},
-    consts::{MAX_CPU_NUM, PER_CPU_ARRAY_PTR, PER_CPU_SIZE},
+    consts::{MAX_CPU_NUM, MAX_ZONE_NUM, PER_CPU_ARRAY_PTR, PER_CPU_SIZE},
     cpu_data::{this_cpu_data, VcpuState},
     memory::{
         addr::PHYS_VIRT_OFFSET,
@@ -254,7 +254,7 @@ impl ArchCpu {
         });
         self.reset(0, this_cpu_data().dtb_ipa);
         unsafe {
-            activate_stage2_page_table(PARKING_PAGE_TABLE.get().unwrap().root().0);
+            activate_stage2_page_table(PARKING_PAGE_TABLE.get().unwrap().root().0, MAX_ZONE_NUM);
             info!("cpu {} start parking", self.cpuid);
             vmreturn(self.guest_reg() as *mut _ as usize);
         }

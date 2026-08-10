@@ -50,6 +50,15 @@ pub fn mem_flags_to_attr(flags: MemFlags) -> MemAttr {
     )
 }
 
+fn stage2_vspace_size() -> usize {
+    let arch = &hv_mem().pt_constants.arch;
+    debug_assert!(arch.level_count() > 0);
+    arch.frame_size(0)
+        .as_usize()
+        .checked_mul(arch.entry_count(0))
+        .expect("stage-2 virtual address-space size overflows usize")
+}
+
 /// Construct a validated VeriHyMem region from an explicit linear mapping.
 pub fn make_memory_region(
     vstart: GuestPhysAddr,
@@ -96,6 +105,9 @@ where
     };
     if !converted.valid() {
         return hv_result_err!(EINVAL, "memory region is outside VeriHyMem bounds");
+    }
+    if converted.vend().0 > stage2_vspace_size() {
+        return hv_result_err!(EINVAL, "memory region exceeds the stage-2 address space");
     }
     Ok(converted)
 }
@@ -252,13 +264,16 @@ impl VMemorySet {
     }
 
     pub unsafe fn activate(&self) {
-        activate_stage2_page_table(self.root_paddr());
+        activate_stage2_page_table(self.root_paddr(), self.zone_id);
     }
 
     pub unsafe fn page_table_query(
         &self,
         vaddr: GuestPhysAddr,
     ) -> PagingResult<(PhysAddr, MemFlags, PageSize)> {
+        if vaddr >= stage2_vspace_size() {
+            return Err(PagingError::NotMapped);
+        }
         let result = if self.iommu {
             hv_mem().iommu_query_vaddr(self.zone_id, VAddr(vaddr))
         } else {

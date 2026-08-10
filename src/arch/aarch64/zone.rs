@@ -29,12 +29,13 @@ impl Zone {
         // The first memory region is used to map the guest physical memory.
 
         for mem_region in mem_regions.iter() {
-            let mut flags = MemFlags::READ | MemFlags::WRITE | MemFlags::EXECUTE;
-            if mem_region.mem_type == MEM_TYPE_IO {
-                flags |= MemFlags::IO;
-            }
             match mem_region.mem_type {
                 MEM_TYPE_RAM | MEM_TYPE_IO => {
+                    let flags = if mem_region.mem_type == MEM_TYPE_RAM {
+                        MemFlags::READ | MemFlags::WRITE | MemFlags::EXECUTE
+                    } else {
+                        MemFlags::READ | MemFlags::WRITE | MemFlags::IO
+                    };
                     self.gpm_mut().insert(MemoryRegion::new_with_offset_mapper(
                         mem_region.virtual_start as GuestPhysAddr,
                         mem_region.physical_start as HostPhysAddr,

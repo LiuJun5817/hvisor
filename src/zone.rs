@@ -808,6 +808,17 @@ pub fn zone_create(config: &HvZoneConfig) -> HvResult<Zone> {
     // TODO: create Zone with cpu_set
     let zone_id = config.zone_id as usize;
 
+    if zone_id >= MAX_ZONE_NUM {
+        return hv_result_err!(
+            EINVAL,
+            format!(
+                "Failed to create zone: zone_id {} exceeds maximum {}",
+                zone_id,
+                MAX_ZONE_NUM - 1
+            )
+        );
+    }
+
     if find_zone(zone_id).is_some() {
         return hv_result_err!(
             EINVAL,

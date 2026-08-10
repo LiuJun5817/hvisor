@@ -88,7 +88,7 @@ impl Zone {
                         gicv2_config.gicc_base,
                         gicv2_config.gicv_base,
                         gicv2_config.gicc_size,
-                        MemFlags::READ | MemFlags::WRITE,
+                        MemFlags::READ | MemFlags::WRITE | MemFlags::IO,
                     ))
                     .unwrap();
             }
