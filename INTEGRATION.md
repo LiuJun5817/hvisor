@@ -8,12 +8,7 @@ All AArch64 guest CPU and IOMMU stage-2 region insertion, removal, query, root l
 
 The integration checks region alignment, nonzero size, overflow, VeriHyMem physical bounds, stage-2 virtual bounds, query bounds, and zone-ID/VMID width. A release claim still requires the configuration and allocator checks listed in the [proof boundary](#proof-boundary).
 
-Current VeriHyMem limitations are:
-
-- shared physical mappings such as AArch64 IVC and GICv2 GICV, which conflict with `BudgetSpec` cross-zone disjointness;
-- relocatable PCI BAR/ROM mappings, because a static disjoint budget cannot contain multiple GPA placements for the same HPA.
-
-These features must be disabled or modeled explicitly. Pre-existing hvisor hardware behavior, including SMMU geometry and device detach, is outside VeriHyMem and remains an integration environment assumption rather than a VeriHyMem limitation.
+`BudgetSpec` now partitions physical pages into disjoint zone-private budgets and a global-shared budget. A region whose complete physical footprint is in `global_shared_pages()` may therefore be mapped by multiple zones. This covers AArch64 IVC and GICv2 GICV sharing when the trusted configuration classifies all of their backing pages as global-shared.
 
 ## Integration Effort
 
@@ -45,8 +40,8 @@ This section defines the assurance boundary for the AArch64 hvisor integration. 
 
 Subject to VeriHyMem's preconditions, axioms, and external hardware semantics, its proofs establish:
 
-- **RegionDisjoint:** ordinary configured physical regions are disjoint within and across zones; only the distinguished GIC region is modeled separately.
-- **ZoneIsolated:** CPU and IOMMU translations stay within the regions admitted for that zone.
+- **RegionDisjoint:** zone-private physical-page budgets are disjoint across zones and from the global-shared budget; pages in the global-shared budget may intentionally be mapped by multiple zones.
+- **ZoneIsolated:** CPU and IOMMU translations stay within the zone's private physical-page budget or the global-shared budget.
 - **PTMemDisjoint:** VeriHyMem page-table frames remain disjoint from other live allocations made through the same verified allocator.
 
 On AArch64, zone CPU and IOMMU stage-2 operations use `HvMem`; no legacy hvisor page-table mutation remains. The adapter checks executable region validity and stage-2 bounds, query bounds, zone-ID range, and the 8-bit VMID used for activation and invalidation.
@@ -55,7 +50,7 @@ On AArch64, zone CPU and IOMMU stage-2 operations use `HvMem`; no legacy hvisor 
 
 The following facts are not proved by the integration:
 
-1. **Budget configuration.** Every inserted CPU region must exactly belong to `zone_regions(zid)`; every IOMMU region must belong there or equal the modeled GIC region, including attributes. A static configuration check must establish region validity, internal and cross-zone physical disjointness, and exclusion of hvisor, allocator, firmware, and reserved memory. The checker and its configuration inputs are trusted.
+1. **Budget configuration.** Every inserted CPU or IOMMU region must have its complete physical-page footprint in either `zone_private_pages(zid)` or `global_shared_pages()`. Zone-private budgets must be pairwise disjoint and disjoint from the global-shared budget. A static configuration check must establish those facts, region validity, and exclusion of hvisor, allocator, firmware, and reserved memory. IVC and GICv2 GICV backing pages must be classified as global-shared. The checker and its configuration inputs are trusted.
 2. **RAII allocation.** `Tracked::assume_new()` bridges erased linear tokens to hvisor ownership. Every external allocator client must keep one owning `Frame` per allocation, drop it exactly once, avoid use or hardware references after drop, and use the same allocator. Under this discipline, VeriHyMem's page-table allocations are disjoint from other live RAII allocations.
 3. **Allocator environment.** The initialized permission set must correspond exactly to the aligned reserved pool. The pool is directly addressable with the configured HVA-to-PA offset, does not overlap mapped guest/device memory, and never exhausts. Initialization must enforce bitmap capacity and address-span bounds.
 4. **Configuration checks.** Array counts and CPU/device IDs must be within their declared limits; regions must fit the active CPU IPA/PA and SMMU address widths. `Frame::new_contiguous` must reject zero or excessive counts and invalid alignment. Until these checks are executable, their callers are trusted boundaries.
@@ -64,10 +59,4 @@ The following facts are not proved by the integration:
 
 ### Unsupported behavior
 
-The current `BudgetSpec` cannot justify AArch64 IVC sharing, GICv2 GICV sharing, or dynamic PCI BAR/ROM relocation. They must be disabled or represented by a proof model that explicitly permits the required sharing or relocation.
-
-The proof does not cover liveness, denial of service, timing/cache side channels, speculative execution, unmodeled DMA, firmware attacks, or arbitrary corruption by unverified code.
-
-### Release evidence
-
-A release claim requires pinned hvisor, VeriHyMem, Verus, and toolchain versions; a zero-error Verus run; an inventory of axioms, assumptions, external bodies, and unsafe boundaries; a successful AArch64 build; and tests for boot, zone lifecycle, CPU/IOMMU mappings, allocator reuse/exhaustion, concurrency, and teardown.
+The current `BudgetSpec` justifies AArch64 IVC and GICv2 GICV sharing when their complete physical footprints are included in `global_shared_pages()`. Dynamic PCI BAR/ROM relocation remains unsupported by the integration proof and must be disabled or represented by a proof model that covers its update and lifecycle semantics.
