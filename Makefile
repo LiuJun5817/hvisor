@@ -217,6 +217,10 @@ download-test-img:
 test: clean test-pre ensure_config gen_cargo_config
 	cargo test $(build_args) -vv
 
+.PHONY: membench
+membench:
+	@bash tools/bench_region.sh
+
 stest: clean test-pre ensure_config gen_cargo_config
 	./platform/$(ARCH)/$(BOARD)/test/systemtest/tcompiledtb.sh
 	./platform/$(ARCH)/$(BOARD)/test/systemtest/tdownload_all.sh

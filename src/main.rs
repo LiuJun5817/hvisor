@@ -247,6 +247,16 @@ fn rust_main(cpuid: usize, host_dtb: usize) {
         wait_for_counter(&INIT_LATE_OK, 1);
     }
 
+    // Keep other CPUs in EL2 so their lazy parking-table initialization does
+    // not run concurrently with the region benchmark.
+    #[cfg(all(test, feature = "membench", target_arch = "aarch64"))]
+    if !is_primary {
+        unsafe { core::arch::asm!("msr daifset, #0xf", options(nostack)) };
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
+        }
+    }
+
     // run all unit tests before starting the root zone
     // CAUTION: test_main will quit qemu after all tests are done
     #[cfg(test)]

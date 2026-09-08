@@ -83,6 +83,8 @@ pub fn test_main(tests: &[&dyn HvUnitTest]) {
     for test in tests {
         test.run();
     }
+    #[cfg(all(feature = "membench", target_arch = "aarch64"))]
+    crate::memory::membench::run();
     println!("\nAll tests passed without panic which is good");
     quit_qemu(HvUnitTestResult::Success);
     loop {}
