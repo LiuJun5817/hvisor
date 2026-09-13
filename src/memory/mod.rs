@@ -20,6 +20,9 @@ pub mod mapper;
 pub mod mm;
 pub mod mmio;
 
+#[cfg(all(test, feature = "membench", target_arch = "aarch64"))]
+pub mod membench;
+
 use core::ops::{Deref, DerefMut};
 
 use bitflags::bitflags;
