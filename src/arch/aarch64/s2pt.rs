@@ -14,6 +14,7 @@
 // Authors:
 //
 #![allow(unused)]
+#[cfg(not(feature = "host-bench"))]
 use aarch64_cpu::registers::VTTBR_EL2;
 use core::fmt;
 use numeric_enum_macro::numeric_enum;
@@ -213,6 +214,7 @@ impl fmt::Debug for PageTableEntry {
 
 pub struct S2PTInstr;
 
+#[cfg(not(feature = "host-bench"))]
 impl PagingInstr for S2PTInstr {
     unsafe fn activate(root_paddr: HostPhysAddr) {
         debug!("activating stage 2 page table at {:#x}", root_paddr);

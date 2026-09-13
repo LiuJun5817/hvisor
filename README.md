@@ -98,6 +98,11 @@ hvisor is a Type-1 bare-metal virtual machine monitor implemented in Rust, featu
 
 Please refer to the hvisor documentation for quick start guides, build and run instructions for all supported platforms: [hvisor Documentation](https://hvisor.syswonder.org/)
 
+Run `make bench_memory_ops` for the five Criterion frame allocator and page-table
+benchmarks, or `make compare_memory_ops` for paired VeriHyMem comparisons with
+identical harnesses and compiler settings. See
+[memory operation benchmarks](./tools/memory-bench/README.md) for details.
+
 ## Roadmap
 ### Completed
 - [CHANGELOG](./CHANGELOG.md)

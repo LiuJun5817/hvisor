@@ -99,6 +99,10 @@ hvisor 是一个用 Rust 实现的 Type-1 裸机虚拟机监控器，采用分�
 
 请参阅 hvisor 文档，获取所有支持平台的快速上手指南、构建和运行说明：[hvisor 文档](https://hvisor.syswonder.org/)
 
+物理页分配器与页表的五项 Criterion 性能测试可运行 `make bench_memory_ops`，
+与 VeriHyMem 使用统一工具链和测试主循环的成对比较可运行 `make compare_memory_ops`。
+运行方式和计时范围见[内存操作基准测试](./tools/memory-bench/README.md)。
+
 ## 路线图
 
 ### 已完成

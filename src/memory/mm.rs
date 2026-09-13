@@ -73,11 +73,15 @@ where
     pub fn new(pt_level: usize) -> Self {
         Self {
             regions: BTreeMap::new(),
-            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+            #[cfg(any(
+                feature = "host-bench",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ))]
             pt: PT::new(pt_level),
-            #[cfg(target_arch = "loongarch64")]
+            #[cfg(all(not(feature = "host-bench"), target_arch = "loongarch64"))]
             pt: PT::new(),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(not(feature = "host-bench"), target_arch = "x86_64"))]
             pt: PT::new(),
         }
     }

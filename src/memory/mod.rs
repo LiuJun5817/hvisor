@@ -15,9 +15,11 @@
 //
 pub mod addr;
 pub mod frame;
+#[cfg(not(feature = "host-bench"))]
 pub mod heap;
 pub mod mapper;
 pub mod mm;
+#[cfg(not(feature = "host-bench"))]
 pub mod mmio;
 
 #[cfg(all(test, feature = "membench", target_arch = "aarch64"))]
@@ -30,6 +32,7 @@ use bitflags::bitflags;
 pub use addr::{GuestPhysAddr, HostPhysAddr, PhysAddr, VirtAddr};
 pub use frame::Frame;
 pub use mm::{MemoryRegion, MemorySet, PARKING_INST_PAGE};
+#[cfg(not(feature = "host-bench"))]
 pub use mmio::*;
 
 use crate::arch::paging;

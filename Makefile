@@ -309,4 +309,25 @@ dtb:
 clean:
 	./tools/clean.sh
 
+# Host Criterion benchmarks; independent of the board configuration and QEMU.
+MEMORY_BENCH_TOOLCHAIN ?= 1.95.0
+MEMORY_BENCH_TARGET ?= $(shell rustc +$(MEMORY_BENCH_TOOLCHAIN) -vV | sed -n 's/^host: //p')
+BENCH_ARGS ?=
+
+.PHONY: bench_memory_ops
+bench_memory_ops:
+	CARGO_TARGET_DIR="$(CURDIR)/target/memory-bench" \
+		cargo +$(MEMORY_BENCH_TOOLCHAIN) bench --locked \
+		--manifest-path tools/memory-bench/Cargo.toml \
+		--target $(MEMORY_BENCH_TARGET) \
+		--bench memory_ops -- $(BENCH_ARGS)
+
+MEMORY_BENCH_REFERENCE ?= ../verified-hv-mem
+MEMORY_COMPARE_ARGS ?=
+.PHONY: compare_memory_ops
+compare_memory_ops:
+	python3.11 tools/memory-bench/compare.py \
+		--reference "$(MEMORY_BENCH_REFERENCE)" \
+		--toolchain "$(MEMORY_BENCH_TOOLCHAIN)" $(MEMORY_COMPARE_ARGS)
+
 include platform/$(ARCH)/$(BOARD)/platform.mk
