@@ -1,0 +1,34 @@
+[package]
+name = "hvisor-memory-bench"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+publish = false
+
+# Keep std and Criterion separate from the bare-metal hypervisor.
+[workspace]
+
+[dependencies]
+verified-hv-mem = { git = "https://github.com/liujun5817/verified-hv-mem", rev = "e389768" }
+vstd = { version = "=0.0.0-2026-06-14-0213", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+criterion = { version = "=0.8.2", features = ["html_reports"] }
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[[bench]]
+name = "region_zone_ops"
+harness = false
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false

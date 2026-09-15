@@ -221,6 +221,10 @@ test: clean test-pre ensure_config gen_cargo_config
 membench:
 	@bash tools/bench_region.sh
 
+.PHONY: membench-criterion
+membench-criterion:
+	@python3 tools/memory-bench/run.py
+
 stest: clean test-pre ensure_config gen_cargo_config
 	./platform/$(ARCH)/$(BOARD)/test/systemtest/tcompiledtb.sh
 	./platform/$(ARCH)/$(BOARD)/test/systemtest/tdownload_all.sh

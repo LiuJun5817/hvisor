@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-# Opt-in bare-metal region benchmark; ordinary builds/tests do not include it.
+# Opt-in bare-metal region and zone benchmarks; ordinary builds/tests do not include them.
 membench = []
 
 [dependencies]
