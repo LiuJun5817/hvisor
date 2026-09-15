@@ -10,6 +10,11 @@ make membench REGIONS=100 REGION_PAGES=1 ZONE_REGIONS=4 ROUNDS=500
 The runner supports `aarch64/qemu-gicv3` in release mode, sets `LOG=error`,
 and uses the existing bare-metal test runner. No guest is started.
 
+For host Criterion measurements with confidence intervals, use
+[`make membench-criterion`](memory-bench/REGION_ZONE.md). These isolate region
+and zone memory management; this QEMU runner retains the complete EL2 zone
+initialization and hardware-maintenance path.
+
 | Parameter | Default | Allowed range | Meaning |
 | --- | ---: | --- | --- |
 | `REGIONS` | 100 | 1–4096 | Regions inserted and removed per region round |

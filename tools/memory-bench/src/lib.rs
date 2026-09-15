@@ -1,4 +1,4 @@
-//! Host adapter for the production frame allocator and AArch64 stage-2 page table.
+//! Host adapters for the production allocator, page table and memory sets.
 //! This unpublished crate is only used by the Criterion executable.
 
 #![allow(dead_code, unused_imports)]
@@ -23,6 +23,10 @@ pub mod memory;
 pub mod paging;
 #[path = "../../../src/arch/aarch64/s2pt.rs"]
 pub mod s2pt;
+
+pub mod region_zone;
+pub use memory::PAGE_SIZE;
+pub use region_zone::{mapping, Fixture, Mapping, OpResult};
 
 pub mod arch {
     pub use crate::paging;

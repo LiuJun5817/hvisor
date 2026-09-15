@@ -1,5 +1,10 @@
 # Matched hvisor / VeriHyMem Memory Operation Benchmarks
 
+Host Criterion tests for region insert/remove and zone-memory create/remove
+are also available through `make membench-criterion`. See
+[region and zone-memory benchmarks](REGION_ZONE.md) for their workload,
+measurement scope, and normalized ns/op reports.
+
 Both repositories use identical `benches/memory_ops.rs` files. Each
 `support/mod.rs` adapts only the library's native APIs, resource initialization,
 and result validation. The comparison runner rejects experiments with mismatched

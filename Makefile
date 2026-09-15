@@ -217,9 +217,12 @@ download-test-img:
 test: clean test-pre ensure_config gen_cargo_config
 	cargo test $(build_args) -vv
 
-.PHONY: membench
+.PHONY: membench membench-criterion
 membench:
 	@bash tools/bench_region.sh
+
+membench-criterion:
+	@python3 tools/memory-bench/run.py
 
 stest: clean test-pre ensure_config gen_cargo_config
 	./platform/$(ARCH)/$(BOARD)/test/systemtest/tcompiledtb.sh
