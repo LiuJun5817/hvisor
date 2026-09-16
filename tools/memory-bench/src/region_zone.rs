@@ -20,8 +20,8 @@ use crate::{
 pub type Mapping = MemoryRegion<usize>;
 pub type OpResult = HvResult;
 
-const MAX_REGIONS: usize = 4096;
-const MAX_MAPPED_PAGES: usize = 32768;
+const MAX_MAPPED_PAGES: usize = 65536;
+const MAX_REGION_PAGES: usize = 32768;
 const ZONE_ID: usize = 1;
 const GUEST_BASE: usize = 0x1000_0000;
 const DATA_PA: usize = 0x6000_0000;
@@ -142,10 +142,30 @@ impl Fixture {
         Ok(())
     }
 
-    pub fn check_mappings(&self, mappings: &[Mapping]) {
+    pub fn check_mappings<'a>(&self, mappings: impl IntoIterator<Item = &'a Mapping>) {
         let sets = self.region.as_ref().expect("region fixture is missing");
         check_set(&sets.cpu, mappings);
         check_empty_set(&sets.iommu);
+    }
+
+    /// Check every target PTE outside timing, including deletion of interior pages.
+    pub fn check_region_pages(&self, mapping: &Mapping, present: bool) {
+        let sets = self.region.as_ref().expect("region fixture is missing");
+        for page in (0..mapping.size).step_by(PAGE_SIZE) {
+            for offset in [page, page + PAGE_SIZE - 1] {
+                let vaddr = mapping.start + offset;
+                // SAFETY: the fixture owns this live, host-backed page table.
+                let translation = unsafe { sets.cpu.page_table_query(vaddr) };
+                if present {
+                    let (paddr, flags, size) = translation.expect("target page is missing");
+                    assert_eq!(paddr, mapping.mapper.map_fn(vaddr));
+                    assert_eq!(flags.bits(), (MemFlags::READ | MemFlags::WRITE).bits());
+                    assert_eq!(size, PageSize::Size4K);
+                } else {
+                    assert!(translation.is_err(), "removed target page remains mapped");
+                }
+            }
+        }
     }
 
     pub fn check_zone(&self, mappings: &[Mapping]) {
@@ -185,17 +205,21 @@ impl Default for Fixture {
 }
 
 pub fn mapping(index: usize, pages: usize) -> Mapping {
-    assert!(index < MAX_REGIONS, "too many regions");
+    mapping_at(index.checked_mul(pages).unwrap(), pages)
+}
+
+/// Place differently sized regions in fixed, nonoverlapping page slots.
+pub fn mapping_at(start_page: usize, pages: usize) -> Mapping {
     assert!(
-        (1..=MAX_MAPPED_PAGES).contains(&pages),
+        (1..=MAX_REGION_PAGES).contains(&pages),
         "invalid region page count"
     );
-    let end_page = (index + 1).checked_mul(pages).unwrap();
+    let end_page = start_page.checked_add(pages).unwrap();
     assert!(
         end_page <= MAX_MAPPED_PAGES,
-        "mapping exceeds the 128 MiB test range"
+        "mapping exceeds the 256 MiB test range"
     );
-    let offset = index * pages * PAGE_SIZE;
+    let offset = start_page * PAGE_SIZE;
     Mapping::new_with_offset_mapper(
         GUEST_BASE + offset,
         DATA_PA + offset,
@@ -204,10 +228,10 @@ pub fn mapping(index: usize, pages: usize) -> Mapping {
     )
 }
 
-fn check_set(set: &Set, mappings: &[Mapping]) {
-    let mut count = 0;
+fn check_set<'a>(set: &Set, mappings: impl IntoIterator<Item = &'a Mapping>) {
+    let mut expected = mappings.into_iter();
     set.for_each_region(|region| {
-        let mapping = mappings.get(count).expect("unexpected region");
+        let mapping = expected.next().expect("unexpected region");
         assert_eq!(region.start, mapping.start, "wrong region start");
         assert_eq!(region.size, mapping.size, "wrong region size");
         assert_eq!(region.flags.bits(), mapping.flags.bits());
@@ -223,9 +247,8 @@ fn check_set(set: &Set, mappings: &[Mapping]) {
             assert_eq!(flags.bits(), (MemFlags::READ | MemFlags::WRITE).bits());
             assert_eq!(size, PageSize::Size4K, "unexpected huge page");
         }
-        count += 1;
     });
-    assert_eq!(count, mappings.len(), "unexpected region count");
+    assert!(expected.next().is_none(), "expected region is missing");
 }
 
 fn check_empty_set(set: &Set) {

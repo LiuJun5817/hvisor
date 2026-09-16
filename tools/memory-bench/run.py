@@ -31,19 +31,34 @@ def capture(command, cwd=REPOSITORY):
 
 
 def workload_environment():
+    legacy = [
+        name for name in ("REGIONS", "ZONE_REGIONS", "ZONE_REGION_PAGES")
+        if name in os.environ
+    ]
+    if legacy:
+        raise ValueError(
+            f"{', '.join(legacy)} no longer supported; unset these variables. "
+            "Region cases now time one operation on a prefilled set: use "
+            "PREFILL_REGIONS for the background region count, PREFILL_REGION_PAGES "
+            "for background region size, and REGION_PAGES for target size. "
+            "Zone cases always create/remove empty zones."
+        )
     values = {}
     for name, default, maximum in (
-        ("REGIONS", "1", 4096),
-        ("REGION_PAGES", "1", 32768),
-        ("ZONE_REGIONS", "1", 64),
+        ("PREFILL_REGIONS", "32", 4096),
+        ("PREFILL_REGION_PAGES", "1024", 32768),
+        ("REGION_PAGES", "1024", 32768),
     ):
         value = os.environ.get(name, default)
         if not re.fullmatch(r"[1-9][0-9]{0,4}", value) or int(value) > maximum:
             raise ValueError(f"{name} must be an integer from 1 to {maximum}; got {value!r}")
         values[name] = int(value)
-    for count in ("REGIONS", "ZONE_REGIONS"):
-        if values[count] * values["REGION_PAGES"] > 32768:
-            raise ValueError(f"{count} * REGION_PAGES must not exceed 32768 (128 MiB)")
+    stride = max(values["PREFILL_REGION_PAGES"], values["REGION_PAGES"])
+    if values["PREFILL_REGIONS"] * stride + values["REGION_PAGES"] > 65536:
+        raise ValueError(
+            "PREFILL_REGIONS * max(PREFILL_REGION_PAGES, REGION_PAGES) + "
+            "REGION_PAGES must not exceed 65536 pages (256 MiB address range)"
+        )
     return values
 
 
@@ -142,13 +157,16 @@ def stream_process(command, log, environment, cpu=None, cargo_json=False):
 
 
 def operation_counts(workload):
-    region_case = f"{workload['REGIONS']}_regions_{workload['REGION_PAGES']}_pages"
-    zone_case = f"{workload['ZONE_REGIONS']}_regions_{workload['REGION_PAGES']}_pages"
+    region_case = (
+        f"prefill_{workload['PREFILL_REGIONS']}_regions_"
+        f"{workload['PREFILL_REGION_PAGES']}_pages/"
+        f"target_{workload['REGION_PAGES']}_pages"
+    )
     return {
-        f"region/insert/{region_case}": workload["REGIONS"],
-        f"region/remove/{region_case}": workload["REGIONS"],
-        f"zone_memory/create/{zone_case}": 1,
-        f"zone_memory/remove/{zone_case}": 1,
+        f"region/insert/{region_case}": 1,
+        f"region/remove/after_insert/{region_case}": 1,
+        "zone_memory/create/empty": 1,
+        "zone_memory/remove/empty": 1,
     }
 
 
@@ -162,6 +180,11 @@ def normalized_summary(started_ns, counts, status):
         if benchmark_id not in counts:
             continue
         divisor = counts[benchmark_id]
+        if divisor != 1 or benchmark.get("throughput") != {"Elements": 1}:
+            raise ValueError(
+                f"{benchmark_id}: expected one operation per iteration with "
+                f"throughput Elements(1); got {benchmark.get('throughput')!r}"
+            )
         mean = json.loads(path.read_text())["mean"]
         interval = mean["confidence_interval"]
         results.append({
