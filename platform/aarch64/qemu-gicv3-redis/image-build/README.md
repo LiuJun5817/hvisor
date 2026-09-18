@@ -22,6 +22,14 @@ sudo env OUT_DIR=/absolute/new/output \
   platform/aarch64/qemu-gicv3-redis/image-build/build-images.sh
 ```
 
+The repository does not require local edits to `hvisor-tool`. Build the pinned
+commit `da5f225745f8082396b7487d3f2395f5a96bffb4` in the sibling
+`../hvisor-tool` checkout. `versions.env` records the source and output hashes,
+so a floating branch or an unpinned latest commit will fail validation. To move
+to a newer hvisor-tool revision, update the commit and both artifact hashes in
+`versions.env`, rebuild the images into a new `OUT_DIR`, and record that image
+set as a new experiment input.
+
 Outputs are written to `image/virtdisk/`:
 
 | File | Contents |

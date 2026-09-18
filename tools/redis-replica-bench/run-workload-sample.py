@@ -15,8 +15,8 @@ from qemu import Console, PLATFORM, REPO, qemu_command
 
 
 VARIANT_DIRS = {
-    "native": Path(os.environ.get("REDIS_NATIVE_HVISOR_DIR", str(REPO.parent / "tmp/hvisor-native"))),
-    "integrated": Path(os.environ.get("REDIS_INTEGRATED_HVISOR_DIR", str(REPO.parent / "tmp/hvisor-integrated"))),
+    "native": Path(os.environ.get("REDIS_NATIVE_HVISOR_DIR", "/tmp/redis-hvisor-worktrees/native")),
+    "integrated": Path(os.environ.get("REDIS_INTEGRATED_HVISOR_DIR", "/tmp/redis-hvisor-worktrees/integrated")),
 }
 DEFAULT_ROOT_DISK = REPO / "platform/aarch64/qemu-gicv3-redis/image/virtdisk/redis-root.ext4"
 
@@ -90,10 +90,14 @@ def main():
             parser.error(f"missing {name}: {path}")
     if args.hvisor_commit:
         hvisor_commit = args.hvisor_commit
+    elif (args.hvisor_dir / ".redis-build-info").is_file():
+        info = (args.hvisor_dir / ".redis-build-info").read_text()
+        hvisor_commit = next((line.split("=", 1)[1] for line in info.splitlines()
+                              if line.startswith("hvisor_commit=")), "unknown")
     elif (args.hvisor_binary.parent / "build-info.txt").is_file():
         info = (args.hvisor_binary.parent / "build-info.txt").read_text()
         hvisor_commit = next((line.split("=", 1)[1] for line in info.splitlines()
-                              if line.startswith("commit=")), "unknown")
+                              if line.startswith("hvisor_commit=")), "unknown")
     elif (args.hvisor_dir / ".git").exists():
         hvisor_commit = subprocess.check_output(
             ["git", "-C", str(args.hvisor_dir), "rev-parse", "HEAD"], text=True
