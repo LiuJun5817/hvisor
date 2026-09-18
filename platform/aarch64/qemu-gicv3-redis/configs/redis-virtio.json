@@ -1,0 +1,90 @@
+{
+    "zones": [
+        {
+            "id": 1,
+            "memory_region": [
+                {
+                    "zone0_ipa": "0x50000000",
+                    "zonex_ipa": "0x50000000",
+                    "size": "0x20000000"
+                }
+            ],
+            "devices": [
+                {
+                    "type": "net",
+                    "addr": "0x0a003600",
+                    "len": "0x200",
+                    "irq": 75,
+                    "tap": "tap-primary",
+                    "mac": [
+                        "0x02",
+                        "0x00",
+                        "0x00",
+                        "0x00",
+                        "0x01",
+                        "0x01"
+                    ],
+                    "status": "enable"
+                },
+                {
+                    "type": "console",
+                    "addr": "0x0a003800",
+                    "len": "0x200",
+                    "irq": 76,
+                    "status": "enable"
+                },
+                {
+                    "type": "blk",
+                    "addr": "0x0a003c00",
+                    "len": "0x200",
+                    "irq": 78,
+                    "img": "/eval/images/redis-primary.ext4",
+                    "status": "enable"
+                }
+            ]
+        },
+        {
+            "id": 2,
+            "memory_region": [
+                {
+                    "zone0_ipa": "0x70000000",
+                    "zonex_ipa": "0x70000000",
+                    "size": "0x20000000"
+                }
+            ],
+            "devices": [
+                {
+                    "type": "net",
+                    "addr": "0x0a003600",
+                    "len": "0x200",
+                    "irq": 75,
+                    "tap": "tap-replica",
+                    "mac": [
+                        "0x02",
+                        "0x00",
+                        "0x00",
+                        "0x00",
+                        "0x02",
+                        "0x01"
+                    ],
+                    "status": "enable"
+                },
+                {
+                    "type": "console",
+                    "addr": "0x0a003800",
+                    "len": "0x200",
+                    "irq": 76,
+                    "status": "enable"
+                },
+                {
+                    "type": "blk",
+                    "addr": "0x0a003c00",
+                    "len": "0x200",
+                    "irq": 78,
+                    "img": "/eval/images/redis-replica.ext4",
+                    "status": "enable"
+                }
+            ]
+        }
+    ]
+}

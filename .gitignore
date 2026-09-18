@@ -38,7 +38,10 @@ src/platform/__board.rs
 # systemtest
 rootfs1.zip*
 jenkins/__pycache__
+**/__pycache__/
+*.py[cod]
 jenkins-cli.jar
 tools/kconfig/.venv/
 tools/kconfig/__pycache__/
 kernel_build/
+*.img
